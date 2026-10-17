@@ -16,8 +16,8 @@ PRESEED_FILE=/etc/phoniebox-image/preseed.env
 
 [ -f "$PRESEED_FILE" ] && . "$PRESEED_FILE"
 
-GIT_USER=${GIT_USER:-MiczFlor}
-GIT_BRANCH=${GIT_BRANCH:-future3/main}
+GIT_USER=${GIT_USER:-xeonqq}
+GIT_BRANCH=${GIT_BRANCH:-future3/develop}
 GIT_REPO_NAME="RPi-Jukebox-RFID"
 GIT_URL="https://github.com/${GIT_USER}/${GIT_REPO_NAME}"
 
@@ -104,7 +104,6 @@ _presed_has AUTOHOTSPOT_PASSWORD         || AUTOHOTSPOT_PASSWORD="PlayItLoud!"
 _presed_has AUTOHOTSPOT_IP               || AUTOHOTSPOT_IP=10.0.0.1
 _presed_has AUTOHOTSPOT_COUNTRYCODE      || AUTOHOTSPOT_COUNTRYCODE=DE
 _presed_has DISABLE_BLUETOOTH            || DISABLE_BLUETOOTH=true
-_presed_has DISABLE_SSH_QOS              || DISABLE_SSH_QOS=false
 _presed_has DISABLE_BOOT_SCREEN          || DISABLE_BOOT_SCREEN=true
 _presed_has DISABLE_BOOT_LOGS_PRINT      || DISABLE_BOOT_LOGS_PRINT=true
 _presed_has SETUP_MPD                    || SETUP_MPD=true
@@ -138,11 +137,14 @@ log "  ENABLE_KIOSK_MODE=${ENABLE_KIOSK_MODE} UPDATE_RASPI_OS=${UPDATE_RASPI_OS}
 
 install() {
     show_slow_hardware_message
+    # prepare_dependencies collects+installs all apt packages and calls
+    # update_raspi_os internally (new in future3, replaces the old
+    # per-routine apt calls and set_ssh_qos, which was removed upstream).
+    prepare_dependencies
     set_raspi_config
-    set_ssh_qos
-    update_raspi_os
-    # init_git_repo_from_tardir is skipped: /opt/Phoniebox was cloned at
-    # image build time and staged as a regular git repository.
+    # init_git_repo_from_tardir is skipped: /opt/Phoniebox (cloned at
+    # image build time from the xeonqq fork) was staged as a regular
+    # git repository in the user's home dir.
     setup_jukebox_core
     setup_mpd
     setup_samba
@@ -151,7 +153,14 @@ install() {
         setup_kiosk_mode
     fi
     if [ "${ENABLE_RFID_READER}" = true ]; then
-        setup_rfid_reader
+        # Bypass the upstream interactive setup_rfid_reader routine.
+        # Instead, call the component script directly with --default-reader
+        # (implemented in run_register_rfid_reader.py) to write the config
+        # non-interactively for the selected reader.
+        RFID_READER_NAME=${RFID_READER_NAME:-rc522_spi}
+        log "Registering RFID reader '${RFID_READER_NAME}' (non-interactive)"
+        bash "${INSTALLATION_PATH}/installation/components/setup_rfid_reader.sh" \
+            -r "${RFID_READER_NAME}" -d no -f
     fi
     optimize_boot_time
     setup_autohotspot

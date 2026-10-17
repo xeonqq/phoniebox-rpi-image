@@ -30,9 +30,11 @@ All option variables come from
 `rootfs-overlay/etc/phoniebox-image/preseed.env` — edit that file to
 change hotspot SSID/password, RFID reader, Samba, WebApp, kiosk mode, etc.
 
-The RFID reader registration is inherently interactive (it needs the
-reader type), so it is disabled by default (`ENABLE_RFID_READER=false`).
-Register your reader later over SSH:
+The RFID reader registration is non-interactive (it defaults to
+`rc522_spi` / MFRC522 via SPI with standard wiring: CE0, IRQ=GPIO24,
+RST=GPIO25). To change the default reader type, set
+`RFID_READER_NAME=<module>` in `preseed.env` (e.g. for a different
+hardware module), or register it later interactively over SSH:
 
 ```
 cd ~/RPi-Jukebox-RFID && installation/components/setup_rfid_reader.sh

@@ -3,18 +3,15 @@ set -euo pipefail
 
 ROOTFS="${1:?Expected target root filesystem path}"
 
-PHONIEBOX_GIT_BRANCH="${PHONIEBOX_GIT_BRANCH:-future3/main}"
+PHONIEBOX_GIT_BRANCH="${PHONIEBOX_GIT_BRANCH:-future3/develop}"
 
-install -d -m 0755 "$ROOTFS/opt"
-install -d -m 0755 "$ROOTFS/etc/phoniebox-image"
-
-# Stage the Phoniebox source inside the image. The first-boot service
-# copies this clone into the user's home dir before running the
-# unattended installer (see rootfs-overlay/usr/local/sbin/phoniebox-*).
+# Clone from the fork: it contains our modifications (e.g. the
+# non-interactive RFID reader registration in run_register_rfid_reader.py)
+# that the upstream MiczFlor repo does not have.
 if [ ! -d "$ROOTFS/opt/Phoniebox/.git" ]; then
     chroot "$ROOTFS" git clone \
         --branch "$PHONIEBOX_GIT_BRANCH" \
-        https://github.com/MiczFlor/RPi-Jukebox-RFID.git \
+        https://github.com/xeonqq/RPi-Jukebox-RFID.git \
         /opt/Phoniebox
 fi
 
