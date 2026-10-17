@@ -22,6 +22,12 @@ chmod 0755 "$ROOTFS/usr/local/sbin/phoniebox-firstboot" \
 
 chroot "$ROOTFS" systemctl enable phoniebox-firstboot.service
 
+# Docker daemon must run at boot; the MeTube container itself is started by
+# phoniebox-metube.service, which is gated on the existence of the music
+# library dir (created by the Phoniebox installation on first boot).
+chroot "$ROOTFS" systemctl enable docker.service
+chroot "$ROOTFS" systemctl enable phoniebox-metube.service
+
 cat > "$ROOTFS/etc/phoniebox-image/README" <<'EOF'
 Phoniebox image first-boot flow
 ===============================

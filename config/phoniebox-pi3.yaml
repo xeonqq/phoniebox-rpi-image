@@ -46,3 +46,5 @@ packages:
   - sudo
   - avahi-daemon
   - raspi-config
+  - docker.io
+  - docker-compose

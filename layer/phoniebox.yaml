@@ -21,4 +21,6 @@ mmdebstrap:
     - rsync
     - sudo
     - wget
+    - docker.io
+    - docker-compose
 

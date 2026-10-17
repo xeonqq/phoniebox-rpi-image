@@ -1,0 +1,18 @@
+[Unit]
+Description=Phoniebox MeTube (YouTube downloader via Docker)
+# Only useful once the music library exists, which is created by the
+# Phoniebox installation on first boot.
+ConditionPathExists=/home/phoniebox/RPi-Jukebox-RFID/shared/audiofolders
+Requires=docker.service
+After=docker.service NetworkManager.service phoniebox-firstboot.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /home/phoniebox/metube/config
+ExecStartPre=/bin/chown phoniebox:phoniebox /home/phoniebox/metube/config
+ExecStart=/usr/bin/docker-compose -f /opt/phoniebox-metube/docker-compose.yml up -d
+ExecStop=/usr/bin/docker-compose -f /opt/phoniebox-metube/docker-compose.yml down
+
+[Install]
+WantedBy=multi-user.target
