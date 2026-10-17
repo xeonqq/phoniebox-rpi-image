@@ -8,7 +8,7 @@ installs itself on first boot.
 
 | Path | Purpose |
 | --- | --- |
-| `config/phoniebox-pi3.yaml` | Image build config (device `rpi3`, user credentials, packages, `network-manager` layer) |
+| `config/phoniebox-pi3.yaml` | Image build config (device `rpi3`, user credentials, packages incl. `network-manager` pkg) |
 | `layer/phoniebox.yaml` | Custom mmdebstrap layer with Phoniebox base packages |
 | `hooks/customize90-phoniebox` | Build hook: clones the Phoniebox source into `/opt/Phoniebox` and enables the first-boot service |
 | `rootfs-overlay/` | Files dropped into the image rootfs (first-boot service + scripts + preseed) |

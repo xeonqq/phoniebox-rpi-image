@@ -14,9 +14,6 @@ image:
 
 layer:
   phoniebox: phoniebox
-  # NetworkManager is required by the Phoniebox autohotspot feature
-  # (trixie-minbase would otherwise use systemd-networkd + iwd)
-  net: network-manager
 
 packages:
   - git
@@ -46,5 +43,12 @@ packages:
   - sudo
   - avahi-daemon
   - raspi-config
+  # NetworkManager is required by the Phoniebox autohotspot feature.
+  # Installed as a package (NOT the "network-manager" layer) because that
+  # layer provides the "network-activator" capability already provided by
+  # systemd-net-min (required by trixie-minbase), causing a provider
+  # conflict at build time. The phoniebox-firstboot script activates
+  # NetworkManager at boot (disables networkd, masks iwd).
+  - network-manager
   - docker.io
   - docker-compose
