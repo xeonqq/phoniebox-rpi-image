@@ -1,0 +1,13 @@
+[Unit]
+Description=Phoniebox first-boot initialization
+Wants=NetworkManager.service
+After=NetworkManager.service
+ConditionPathExists=!/var/lib/phoniebox-image/initialized
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/phoniebox-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

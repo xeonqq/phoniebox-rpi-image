@@ -1,0 +1,17 @@
+# METABEGIN
+# X-Env-Layer-Name: phoniebox
+# X-Env-Layer-Category: application
+# X-Env-Layer-Version: 0.1.0
+# METAEND
+
+mmdebstrap:
+  packages:
+    - git
+    - python3-venv
+    - python3-pip
+    - python3-dev
+    - build-essential
+    - alsa-utils
+    - mpg123
+    - ffmpeg
+

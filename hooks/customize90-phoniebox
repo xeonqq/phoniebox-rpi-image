@@ -1,0 +1,22 @@
+#!/bin/bash
+set -euo pipefail
+
+ROOTFS="${1:?Expected target root filesystem path}"
+
+install -d -m 0755 "$ROOTFS/opt"
+
+if [ ! -d "$ROOTFS/opt/Phoniebox/.git" ]; then
+    chroot "$ROOTFS" git clone \
+        --branch future3/develop \
+        https://github.com/MiczFlor/RPi-Jukebox-RFID.git \
+        /opt/Phoniebox
+fi
+
+# Keep the repository available for first-boot installation.
+install -d -m 0755 "$ROOTFS/etc/phoniebox-image"
+
+cat > "$ROOTFS/etc/phoniebox-image/README" <<'EOF'
+Phoniebox source has been staged in /opt/Phoniebox.
+Complete the version-specific installation and hardware setup
+before enabling the playback services.
+EOF

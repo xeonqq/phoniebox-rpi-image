@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+
+STATUS_DIR=/var/lib/phoniebox-image
+mkdir -p "$STATUS_DIR"
+
+if ! systemctl is-active --quiet NetworkManager; then
+    echo "NetworkManager is not running" >&2
+    exit 1
+fi
+
+if ! nmcli -t -f STATE general status | grep -qx connected; then
+    echo "Network is not connected yet" >&2
+    exit 1
+fi
+
+touch "$STATUS_DIR/network-ready"
+
+# Do not enable Phoniebox playback services here until
+# the installation for the pinned future3 commit is complete.
