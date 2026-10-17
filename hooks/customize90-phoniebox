@@ -3,20 +3,40 @@ set -euo pipefail
 
 ROOTFS="${1:?Expected target root filesystem path}"
 
-install -d -m 0755 "$ROOTFS/opt"
+PHONIEBOX_GIT_BRANCH="${PHONIEBOX_GIT_BRANCH:-future3/main}"
 
+install -d -m 0755 "$ROOTFS/opt"
+install -d -m 0755 "$ROOTFS/etc/phoniebox-image"
+
+# Stage the Phoniebox source inside the image. The first-boot service
+# copies this clone into the user's home dir before running the
+# unattended installer (see rootfs-overlay/usr/local/sbin/phoniebox-*).
 if [ ! -d "$ROOTFS/opt/Phoniebox/.git" ]; then
     chroot "$ROOTFS" git clone \
-        --branch future3/develop \
+        --branch "$PHONIEBOX_GIT_BRANCH" \
         https://github.com/MiczFlor/RPi-Jukebox-RFID.git \
         /opt/Phoniebox
 fi
 
-# Keep the repository available for first-boot installation.
-install -d -m 0755 "$ROOTFS/etc/phoniebox-image"
+# Exec bits can get lost depending on how the overlay is applied.
+chmod 0755 "$ROOTFS/usr/local/sbin/phoniebox-firstboot" \
+           "$ROOTFS/usr/local/sbin/phoniebox-install-unattended" \
+           "$ROOTFS/usr/local/sbin/phoniebox-wifi-setup"
+
+chroot "$ROOTFS" systemctl enable phoniebox-firstboot.service
 
 cat > "$ROOTFS/etc/phoniebox-image/README" <<'EOF'
-Phoniebox source has been staged in /opt/Phoniebox.
-Complete the version-specific installation and hardware setup
-before enabling the playback services.
+Phoniebox image first-boot flow
+===============================
+
+On first boot the device:
+1. brings up NetworkManager,
+2. uses WiFi credentials from /boot/firmware/phoniebox-wifi.conf if present,
+3. otherwise opens a bootstrap hotspot (see /etc/phoniebox-image/preseed.env),
+4. runs the Phoniebox installation unattended as soon as it has internet.
+
+Home WiFi can be set over the hotspot via SSH:
+  sudo phoniebox-wifi-setup "SSID" "PSK" [COUNTRY]
+
+Installer options are pre-selected in /etc/phoniebox-image/preseed.env.
 EOF

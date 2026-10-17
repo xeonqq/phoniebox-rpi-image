@@ -14,4 +14,11 @@ mmdebstrap:
     - alsa-utils
     - mpg123
     - ffmpeg
+    - iw
+    - wireless-tools
+    - wpasupplicant
+    - dnsmasq
+    - rsync
+    - sudo
+    - wget
 

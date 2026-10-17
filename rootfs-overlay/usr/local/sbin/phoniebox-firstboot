@@ -1,20 +1,198 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
+# /usr/local/sbin/phoniebox-firstboot  (runs as root, once per image)
+#
+# Flow:
+#   1. Make NetworkManager the active network manager.
+#   2. If /boot/firmware/phoniebox-wifi.conf exists, connect to that WiFi.
+#   3. Otherwise open a temporary bootstrap WiFi hotspot so the user can
+#      connect and configure the home WiFi (SSH -> phoniebox-wifi-setup).
+#   4. As soon as the box has internet, run the Phoniebox installation
+#      non-interactively with options from /etc/phoniebox-image/preseed.env.
+#   5. Clean up, mark done, reboot (optional).
+
+set -uo pipefail
 
 STATUS_DIR=/var/lib/phoniebox-image
+LOGFILE=/var/log/phoniebox-firstboot.log
+PRESEED_FILE=/etc/phoniebox-image/preseed.env
+BOOT_WIFI_CONF=/boot/firmware/phoniebox-wifi.conf
+CHECK_URL=http://deb.debian.org/
+HOME_WIFI_CON=phoniebox-home
+BOOTSTRAP_CON=phoniebox-bootstrap
+CONNECT_TIMEOUT=600      # seconds to wait for initial connectivity
+WIFI_CONF_TIMEOUT=120    # seconds to wait after applying boot wifi conf
+WAIT_LOOP_MAX=86400      # max seconds waiting for the user to configure wifi
+
+[ -f "$PRESEED_FILE" ] && . "$PRESEED_FILE"
+
+PHONIEBOX_USER=${PHONIEBOX_USER:-phoniebox}
+BOOTSTRAP_SSID=${BOOTSTRAP_SSID:-Phoniebox_Setup}
+BOOTSTRAP_PASSWORD=${BOOTSTRAP_PASSWORD:-PlayItLoud!}
+BOOTSTRAP_IP=${BOOTSTRAP_IP:-10.0.0.1}
+WIFI_IF=${WIFI_IF:-wlan0}
+REBOOT_AFTER_INSTALL=${REBOOT_AFTER_INSTALL:-true}
+
 mkdir -p "$STATUS_DIR"
+exec >>"$LOGFILE" 2>&1
 
-if ! systemctl is-active --quiet NetworkManager; then
-    echo "NetworkManager is not running" >&2
+log() {
+    echo "[phoniebox-firstboot $(date '+%F %T')] $*"
+    logger -t phoniebox-firstboot "$*" 2>/dev/null || true
+}
+
+have_internet() {
+    curl -4 -fsS -m 8 -o /dev/null "$CHECK_URL"
+}
+
+setup_networkmanager() {
+    rfkill unblock all 2>/dev/null || true
+    systemctl enable NetworkManager 2>/dev/null || true
+    systemctl start NetworkManager
+    # Make sure the other network stacks stay out of the way.
+    systemctl disable --now systemd-networkd.socket systemd-networkd.service 2>/dev/null || true
+    systemctl mask iwd 2>/dev/null || true
+    systemctl stop iwd 2>/dev/null || true
+    local i
+    for i in $(seq 1 30); do
+        nmcli general status >/dev/null 2>&1 && return 0
+        sleep 1
+    done
+    return 1
+}
+
+wifi_connect() { # $1 con-name  $2 ssid  $3 psk
+    nmcli connection delete "$1" >/dev/null 2>&1 || true
+    nmcli connection add type wifi con-name "$1" ifname "$WIFI_IF" \
+        ssid "$2" 802-11-wireless-security.key-mgmt wpa-psk \
+        802-11-wireless-security.psk "$3" connection.autoconnect yes >/dev/null
+    nmcli connection up "$1" >/dev/null 2>&1
+}
+
+provision_wifi_from_boot() {
+    [ -f "$BOOT_WIFI_CONF" ] || return 1
+    local ssid psk country
+    ssid=$(sed -n 's/^SSID=//p' "$BOOT_WIFI_CONF" | head -n1)
+    psk=$(sed -n 's/^PSK=//p' "$BOOT_WIFI_CONF" | head -n1)
+    country=$(sed -n 's/^COUNTRY=//p' "$BOOT_WIFI_CONF" | head -n1)
+    if [ -z "$ssid" ] || [ -z "$psk" ]; then
+        log "WARNING: $BOOT_WIFI_CONF exists but lacks SSID=/PSK= lines"
+        return 1
+    fi
+    [ -n "$country" ] && iw reg set "$country" 2>/dev/null
+    log "Connecting to WiFi '$ssid' from $BOOT_WIFI_CONF"
+    wifi_connect "$HOME_WIFI_CON" "$ssid" "$psk"
+}
+
+start_bootstrap_hotspot() {
+    log "Starting bootstrap hotspot SSID='$BOOTSTRAP_SSID' IP=$BOOTSTRAP_IP"
+    nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
+    nmcli connection add type wifi con-name "$BOOTSTRAP_CON" ifname "$WIFI_IF" \
+        ssid "$BOOTSTRAP_SSID" 802-11-wireless.mode ap \
+        802-11-wireless-security.key-mgmt wpa-psk \
+        802-11-wireless-security.psk "$BOOTSTRAP_PASSWORD" \
+        ipv4.method shared ipv4.address "${BOOTSTRAP_IP}/24" \
+        connection.autoconnect no >/dev/null
+    nmcli connection up "$BOOTSTRAP_CON" >/dev/null
+}
+run_install() {
+    local user="$PHONIEBOX_USER"
+    local home ugroup
+    home=$(getent passwd "$user" | cut -d: -f6)
+    ugroup=$(id -gn "$user")
+    if [ -z "$home" ]; then
+        log "ERROR: user $user does not exist"
+        return 1
+    fi
+    log "Starting unattended Phoniebox installation for $user (home $home)"
+
+    export DEBIAN_FRONTEND=noninteractive
+    # The installer routines need root for apt/systemctl. Grant passwordless
+    # sudo for the duration of the install.
+    printf '%s ALL=(ALL) NOPASSWD: ALL\nDefaults env_keep += "DEBIAN_FRONTEND"\n' "$user" \
+        > /etc/sudoers.d/010-phoniebox-nopasswd
+    chmod 0440 /etc/sudoers.d/010-phoniebox-nopasswd
+
+    # Stage the pinned Phoniebox source that was cloned at build time.
+    if [ ! -d "$home/RPi-Jukebox-RFID" ] && [ -d /opt/Phoniebox/.git ]; then
+        cp -a /opt/Phoniebox "$home/RPi-Jukebox-RFID"
+        chown -R "$user:$ugroup" "$home/RPi-Jukebox-RFID"
+        log "Staged /opt/Phoniebox into $home/RPi-Jukebox-RFID"
+    fi
+
+    rm -f "$home/.phoniebox-install-success" "$home/.phoniebox-install-failed"
+    if runuser -l "$user" -c /usr/local/sbin/phoniebox-install-unattended; then
+        log "Installer driver finished"
+    else
+        log "Installer driver returned a non-zero status"
+    fi
+
+    if [ -f "$home/.phoniebox-install-success" ]; then
+        # jukebox-daemon is a systemd *user* service; linger keeps the user
+        # manager running without an interactive login.
+        loginctl enable-linger "$user" 2>/dev/null || true
+        nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
+        touch "$STATUS_DIR/initialized"
+        log "Phoniebox installation complete"
+        return 0
+    fi
+    log "Installation FAILED - check $home/INSTALL-*.log"
+    return 1
+}
+
+### main -----------------------------------------------------------------
+
+[ -f "$STATUS_DIR/initialized" ] && { log "Already initialized"; exit 0; }
+log "First boot - phoniebox image initialization"
+
+setup_networkmanager || { log "FATAL: NetworkManager did not come up"; exit 1; }
+
+# 1) Give wired/DHCP networks a grace period.
+got=0
+waited=0
+while [ "$waited" -lt "$CONNECT_TIMEOUT" ]; do
+    if have_internet; then got=1; break; fi
+    sleep 5
+    waited=$((waited + 5))
+done
+
+# 2) Try WiFi credentials baked into the boot partition.
+if [ "$got" -eq 0 ] && provision_wifi_from_boot; then
+    waited=0
+    while [ "$waited" -lt "$WIFI_CONF_TIMEOUT" ]; do
+        if have_internet; then got=1; break; fi
+        sleep 5
+        waited=$((waited + 5))
+    done
+fi
+
+# 3) Still offline: open the bootstrap hotspot and wait for the user.
+if [ "$got" -eq 0 ]; then
+    start_bootstrap_hotspot \
+        || log "WARNING: bootstrap hotspot failed; waiting for any connection anyway"
+    log "Bootstrap hotspot is up. Connect to '$BOOTSTRAP_SSID',"
+    log "then SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\""
+    waited=0
+    while ! have_internet; do
+        sleep 10
+        waited=$((waited + 10))
+        if [ $((waited % 300)) -eq 0 ]; then
+            log "Still waiting for internet access (${waited}s)"
+        fi
+        if [ "$waited" -ge "$WAIT_LOOP_MAX" ]; then
+            log "FATAL: no connectivity after ${WAIT_LOOP_MAX}s - giving up"
+            exit 1
+        fi
+    done
+fi
+
+log "Internet access detected - running installer"
+
+if ! run_install; then
     exit 1
 fi
 
-if ! nmcli -t -f STATE general status | grep -qx connected; then
-    echo "Network is not connected yet" >&2
-    exit 1
+if [ "$REBOOT_AFTER_INSTALL" = true ]; then
+    log "Rebooting to finish setup"
+    systemctl reboot
 fi
-
-touch "$STATUS_DIR/network-ready"
-
-# Do not enable Phoniebox playback services here until
-# the installation for the pinned future3 commit is complete.
+exit 0

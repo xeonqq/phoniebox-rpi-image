@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Configure the home WiFi from a shell, e.g. while connected to the
+# bootstrap hotspot. The first-boot service will automatically start the
+# Phoniebox installation as soon as internet access is available.
+#
+# Usage: sudo phoniebox-wifi-setup "SSID" "PSK" [COUNTRY]
+set -euo pipefail
+
+if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
+    echo "Usage: sudo $0 \"SSID\" \"PSK\" [COUNTRY]" >&2
+    exit 1
+fi
+
+SSID=$1
+PSK=$2
+COUNTRY=${3:-}
+WIFI_IF=${WIFI_IF:-wlan0}
+CON_NAME=phoniebox-home
+
+if [ -n "$COUNTRY" ]; then
+    iw reg set "$COUNTRY" 2>/dev/null || true
+fi
+
+nmcli connection delete "$CON_NAME" >/dev/null 2>&1 || true
+nmcli connection add type wifi con-name "$CON_NAME" ifname "$WIFI_IF" \
+    ssid "$SSID" 802-11-wireless-security.key-mgmt wpa-psk \
+    802-11-wireless-security.psk "$PSK" \
+    connection.autoconnect yes >/dev/null
+
+echo "Connecting to '$SSID' ..."
+if ! nmcli connection up "$CON_NAME"; then
+    echo "ERROR: could not connect. Check SSID/PSK and try again." >&2
+    exit 1
+fi
+
+if curl -4 -fsS -m 8 -o /dev/null http://deb.debian.org/; then
+    echo "OK: connected and internet is reachable."
+    echo "The Phoniebox installation will start automatically - this takes 20-60 minutes."
+    echo "Progress: ssh ${CON_NAME#}@phoniebox 'tail -f ~/INSTALL-*.log'"
+else
+    echo "Connected, but internet is not reachable yet."
+    echo "The installation will start automatically once internet access is available."
+fi

@@ -1,5 +1,5 @@
 [Unit]
-Description=Phoniebox first-boot initialization
+Description=Phoniebox first-boot installation
 Wants=NetworkManager.service
 After=NetworkManager.service
 ConditionPathExists=!/var/lib/phoniebox-image/initialized
@@ -7,6 +7,7 @@ ConditionPathExists=!/var/lib/phoniebox-image/initialized
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/phoniebox-firstboot
+TimeoutStartSec=0
 RemainAfterExit=yes
 
 [Install]

@@ -4,16 +4,24 @@ include:
 device:
   layer: rpi3
   hostname: phoniebox
+  # Login credentials of the image. The password must satisfy:
+  # >=8 chars, lower+upper case, digit, special char from @$!%*?&
+  user1: phoniebox
+  user1pass: Phoniebox1!
 
 image:
   layer: image-rpios
 
 layer:
   phoniebox: phoniebox
+  # NetworkManager is required by the Phoniebox autohotspot feature
+  # (trixie-minbase would otherwise use systemd-networkd + iwd)
+  net: network-manager
 
 packages:
   - git
   - curl
+  - wget
   - ca-certificates
   - python3
   - python3-venv
@@ -29,5 +37,12 @@ packages:
   - ffmpeg
   - i2c-tools
   - spi-tools
-  - network-manager
   - rfkill
+  - iw
+  - wireless-tools
+  - wpasupplicant
+  - dnsmasq
+  - rsync
+  - sudo
+  - avahi-daemon
+  - raspi-config
