@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""
+Phoniebox Wi-Fi Setup Portal (Captive Portal).
+
+Serves a simple webpage while the bootstrap hotspot is active.
+The user connects to the hotspot, opens http://10.0.0.1/, selects their home
+Wi-Fi from a scanned list, enters the password, and clicks "Connect".
+If the connection succeeds, the Phoniebox installation starts automatically
+(handled by phoniebox-firstboot).
+"""
+import html
+import json
+import subprocess
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
+
+IFACE = "wlan0"
+PORT = 80
+INSTALL_MINUTES = 20
+HOTSPOT_CON = "phoniebox-bootstrap"
+
+STATE = {
+    "connecting": False,
+    "connected": False,
+    "error": "",
+    "ssid": "",
+}
+
+
+def scan_networks():
+    """Scan available Wi-Fi networks via nmcli and return a deduped list."""
+    try:
+        res = subprocess.run(
+            ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
+             "ifname", IFACE, "--rescan", "yes"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if res.returncode != 0:
+            return []
+        networks = []
+        seen = set()
+        for line in res.stdout.strip().splitlines():
+            parts = line.split(":")
+            if len(parts) < 3:
+                continue
+            ssid, signal, security = parts[0], parts[1], parts[2]
+            if not ssid or ssid in seen:
+                continue
+            seen.add(ssid)
+            networks.append({"ssid": ssid, "signal": signal, "security": security})
+        # Sort by signal strength (strongest first)
+        networks.sort(key=lambda x: int(x["signal"]) if x["signal"].isdigit() else 0,
+                      reverse=True)
+        return networks
+    except Exception:
+        return []
+
+
+def _restore_hotspot():
+    """Bring the bootstrap hotspot back up after a failed connection attempt."""
+    try:
+        subprocess.run(["nmcli", "connection", "up", HOTSPOT_CON],
+                       capture_output=True, timeout=30)
+    except Exception:
+        pass
+
+
+def connect(ssid, password):
+    """Attempt to connect to the selected Wi-Fi in a background thread."""
+    STATE["connecting"] = True
+    STATE["connected"] = False
+    STATE["error"] = ""
+    STATE["ssid"] = ssid
+    try:
+        # Give the HTTP response time to reach the user's browser before
+        # the hotspot is torn down.
+        time.sleep(1)
+        cmd = ["nmcli", "device", "wifi", "connect", ssid, "ifname", IFACE]
+        if password:
+            cmd.extend(["password", password])
+
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        if res.returncode == 0:
+            STATE["connected"] = True
+            STATE["error"] = ""
+        else:
+            err = res.stderr.strip() or res.stdout.strip() or "Unknown connection error"
+            STATE["error"] = err.splitlines()[-1] if err else "Unknown connection error"
+            # Restore hotspot so the user can retry
+            _restore_hotspot()
+    except Exception as e:
+        STATE["error"] = str(e)
+        _restore_hotspot()
+    finally:
+        STATE["connecting"] = False
+PAGE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phoniebox Wi-Fi Setup</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         max-width: 600px; margin: 20px auto; padding: 0 16px;
+         background: #f5f5f5; color: #333; }}
+  h1 {{ font-size: 1.4em; color: #2c3e50; }}
+  .card {{ background: #fff; border-radius: 8px; padding: 20px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 16px; }}
+  .warn {{ background: #fff3cd; border: 2px solid #ff9800; color: #856404;
+          padding: 14px; border-radius: 8px; margin-bottom: 16px; font-weight: 600; }}
+  .warn small {{ font-weight: normal; display: block; margin-top: 6px; }}
+  .net {{ padding: 8px 0; border-bottom: 1px solid #eee; display: flex;
+         align-items: center; }}
+  .net:last-child {{ border-bottom: none; }}
+  .net input {{ margin-right: 10px; transform: scale(1.3); }}
+  .net label {{ flex: 1; cursor: pointer; }}
+  .sig {{ color: #888; font-size: 0.85em; float: right; }}
+  input[type=password] {{ width: 100%; padding: 12px; margin: 12px 0;
+                         border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }}
+  button {{ background: #2c3e50; color: white; border: none; padding: 14px 20px;
+           border-radius: 6px; font-size: 1.05em; width: 100%; cursor: pointer; }}
+  button:active {{ background: #1a252f; }}
+  .empty {{ text-align: center; padding: 20px; color: #666; }}
+  .error {{ background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24;
+           padding: 12px; border-radius: 6px; margin-bottom: 12px; }}
+  .footer {{ text-align: center; color: #999; font-size: 0.85em; margin-top: 20px; }}
+</style>
+</head>
+<body>
+<h1>🎵 Phoniebox Wi-Fi Setup</h1>
+
+<div class="warn">
+ ⚠️ Important: Once connected, the Phoniebox installation starts automatically
+ and takes approximately {install_minutes} minutes.
+ <small>Do NOT unplug the power during installation! The device will reboot
+ itself when finished.</small>
+</div>
+
+<div class="card">
+{error_html}
+<form method="post" action="/connect">
+  <h3 style="margin-top:0">Select your Wi-Fi network</h3>
+  {networks_html}
+  <input type="password" name="password" placeholder="Wi-Fi password (leave empty for open networks)">
+  <button type="submit">🔗 Connect &amp; Start Installation</button>
+</form>
+<p style="text-align:center;margin-top:14px">
+  <a href="/">⟳ Rescan networks</a>
+</p>
+</div>
+
+<div class="footer">
+  Phoniebox Setup Portal · http://10.0.0.1/
+</div>
+</body>
+</html>"""
+
+CONNECTING_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connecting...</title>
+<meta http-equiv="refresh" content="5">
+<style>
+  body {{ font-family: sans-serif; max-width: 600px; margin: 40px auto;
+         padding: 0 16px; text-align: center; color: #333; }}
+  .warn {{ background: #fff3cd; border: 2px solid #ff9800; color: #856404;
+          padding: 14px; border-radius: 8px; margin-top: 20px; font-weight: 600; }}
+  .spinner {{ font-size: 3em; margin: 20px 0; }}
+</style>
+</head>
+<body>
+<div class="spinner">⏳</div>
+<h2>Connecting to <span id="ssid"></span>...</h2>
+<p id="status">Checking connection status every 5 seconds.</p>
+<div class="warn">
+ ⚠️ If this page stops loading, the connection succeeded! The Phoniebox
+ installation will start automatically and takes about {install_minutes} minutes.
+ <br><br>Do NOT unplug the power!
+</div>
+<script>
+document.getElementById('ssid').textContent = {ssid_js};
+async function poll() {{
+  try {{
+    const r = await fetch('/status');
+    const s = await r.json();
+    if (s.connected) {{
+      document.getElementById('status').textContent =
+        '✅ Connected! Installation starting...';
+    }} else if (s.error) {{
+      document.getElementById('status').textContent =
+        '❌ ' + s.error + ' — Going back...';
+      setTimeout(() => window.location = '/', 3000);
+    }}
+  }} catch (e) {{
+    // Portal unreachable: likely connected successfully
+    document.getElementById('status').textContent =
+      'Connection appears successful! The hotspot is closing...';
+  }}
+}}
+setInterval(poll, 4000);
+</script>
+</body>
+</html>"""
+def render_networks():
+    networks = scan_networks()
+    if not networks:
+        return ("<div class='empty'>No Wi-Fi networks found yet.<br>"
+                "<a href='/'>⟳ Rescan</a></div>")
+    rows = []
+    for i, net in enumerate(networks):
+        locked = "🔒" if net["security"] and net["security"] != "--" else "🌐"
+        rows.append(f"""
+        <div class="net">
+          <input type="radio" name="ssid" value="{html.escape(net['ssid'])}"
+                 id="net{i}" {'checked' if i == 0 else ''}>
+          <label for="net{i}">{locked} {html.escape(net['ssid'])}
+                 <span class="sig">{html.escape(net['signal'])}%</span></label>
+        </div>""")
+    return "".join(rows)
+
+
+def render_index(error=""):
+    error_html = f"<div class='error'>❌ {html.escape(error)}</div>" if error else ""
+    return PAGE_TEMPLATE.format(
+        install_minutes=INSTALL_MINUTES,
+        networks_html=render_networks(),
+        error_html=error_html,
+    )
+
+
+def render_connecting(ssid):
+    return CONNECTING_PAGE.format(install_minutes=INSTALL_MINUTES,
+                                  ssid_js=json.dumps(ssid))
+
+
+class PortalHandler(BaseHTTPRequestHandler):
+    def _send(self, body, code=200, ctype="text/html; charset=utf-8"):
+        data = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        path = urlsplit(self.path).path
+        if path == "/status":
+            self._send(json.dumps(STATE), ctype="application/json")
+            return
+        # Captive portal auto-redirect probes from common OS detection
+        probes = {"/generate_204", "/hotspot-detect.html", "/connecttest.txt",
+                  "/ncsi.txt", "/library/test/success.html", "/success.txt",
+                  "/redirect", "/gen_204"}
+        if path in probes:
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self._send(render_index())
+
+    def do_POST(self):
+        path = urlsplit(self.path).path
+        if path != "/connect":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+        form = parse_qs(body)
+        ssid = (form.get("ssid", [""])[0]).strip()
+        password = form.get("password", [""])[0]
+
+        if not ssid:
+            self._send(render_index("Please select a Wi-Fi network first."))
+            return
+        if STATE["connecting"]:
+            self._send(render_connecting(STATE["ssid"]))
+            return
+
+        threading.Thread(target=connect, args=(ssid, password),
+                         daemon=True).start()
+        self._send(render_connecting(ssid))
+
+    def log_message(self, fmt, *args):
+        return
+
+
+def main():
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), PortalHandler)
+    print(f"Phoniebox Wi-Fi portal listening on 0.0.0.0:{PORT}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

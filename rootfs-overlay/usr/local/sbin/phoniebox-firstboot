@@ -93,6 +93,11 @@ start_bootstrap_hotspot() {
         ipv4.method shared ipv4.address "${BOOTSTRAP_IP}/24" \
         connection.autoconnect no >/dev/null
     nmcli connection up "$BOOTSTRAP_CON" >/dev/null
+    # Start the Wi-Fi setup portal so users can pick their home network
+    # from a webpage (http://10.0.0.1/) instead of using the CLI.
+    systemctl start phoniebox-wifi-portal.service 2>/dev/null \
+        || log "WARNING: failed to start Wi-Fi setup portal"
+    log "Wi-Fi setup portal is running at http://$BOOTSTRAP_IP/"
 }
 run_install() {
     local user="$PHONIEBOX_USER"
@@ -130,6 +135,8 @@ run_install() {
         # jukebox-daemon is a systemd *user* service; linger keeps the user
         # manager running without an interactive login.
         loginctl enable-linger "$user" 2>/dev/null || true
+        # Stop the setup portal - no longer needed once installation begins.
+        systemctl stop phoniebox-wifi-portal.service 2>/dev/null || true
         nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
         touch "$STATUS_DIR/initialized"
         log "Phoniebox installation complete"
@@ -170,7 +177,8 @@ if [ "$got" -eq 0 ]; then
     start_bootstrap_hotspot \
         || log "WARNING: bootstrap hotspot failed; waiting for any connection anyway"
     log "Bootstrap hotspot is up. Connect to '$BOOTSTRAP_SSID',"
-    log "then SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\""
+    log "then open http://$BOOTSTRAP_IP/ in a browser and follow the setup page"
+    log "(or SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\")"
     waited=0
     while ! have_internet; do
         sleep 10

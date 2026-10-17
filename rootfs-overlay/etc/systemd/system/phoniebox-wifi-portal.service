@@ -1,0 +1,16 @@
+[Unit]
+Description=Phoniebox Wi-Fi setup captive portal
+# The portal is only useful while the bootstrap hotspot is up, which is
+# managed by phoniebox-firstboot. It is started/stopped on demand, so the
+# service is not enabled in any target by default.
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/phoniebox-wifi-portal
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
