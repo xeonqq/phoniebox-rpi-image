@@ -104,6 +104,25 @@ cd ../rpi-image-gen
 ./rpi-image-gen build -S ../phoniebox-image -c ../phoniebox-image/config/phoniebox-pi3.yaml
 ```
 
+### Disk space
+
+`rpi-image-gen` keeps the chroot and the deploy directory of every build in
+`<rpi-image-gen>/work`. A build needs roughly 9 GB (chroot ~1.6 GB, image
+~6 GB, deploy ~1.2 GB), so on a small SD card the second build already
+runs out of space and dies with
+
+```
+E: Sub-process env returned an error code (1)
+... /tmp/apt-dpkg-install-XXXX/41-docker.io_..._arm64.deb
+```
+
+Free the space of the previous builds before building again (needs root,
+the directories belong to the build user):
+
+```
+sudo ../phoniebox-image/scripts/clean-build-space.sh ../rpi-image-gen
+```
+
 ## Logs on the device
 
 * First boot: `/var/log/phoniebox-firstboot.log`
