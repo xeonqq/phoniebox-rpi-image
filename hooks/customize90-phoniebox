@@ -18,7 +18,11 @@ fi
 # Exec bits can get lost depending on how the overlay is applied.
 chmod 0755 "$ROOTFS/usr/local/sbin/phoniebox-firstboot" \
            "$ROOTFS/usr/local/sbin/phoniebox-install-unattended" \
-           "$ROOTFS/usr/local/sbin/phoniebox-wifi-setup"
+           "$ROOTFS/usr/local/sbin/phoniebox-wifi-setup" \
+           "$ROOTFS/usr/local/sbin/phoniebox-wifi-portal"
+
+# Stale byte code from the build host must not end up in the image.
+rm -rf "$ROOTFS/usr/local/sbin/__pycache__"
 
 chroot "$ROOTFS" systemctl enable phoniebox-firstboot.service
 

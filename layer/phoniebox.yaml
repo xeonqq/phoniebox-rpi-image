@@ -1,7 +1,7 @@
 # METABEGIN
 # X-Env-Layer-Name: phoniebox
 # X-Env-Layer-Category: application
-# X-Env-Layer-Version: 0.1.0
+# X-Env-Layer-Version: 0.2.0
 # METAEND
 
 mmdebstrap:
@@ -23,4 +23,35 @@ mmdebstrap:
     - wget
     - docker.io
     - docker-compose
-
+  customize-hooks:
+    # ------------------------------------------------------------------
+    # Network stack: NetworkManager must be the only network manager.
+    #
+    # The base image (trixie-minbase) enables systemd-networkd + iwd and
+    # the dnsmasq package enables its own daemon. All three break the
+    # Phoniebox hotspot:
+    #   * systemd-networkd grabs wlan0 (02-wlan0.network) and configures it
+    #     via iwd, before NetworkManager can use the device.
+    #   * iwd takes over the WiFi device via netifd and blocks
+    #     wpa_supplicant / NetworkManager.
+    #   * the standalone dnsmasq binds 0.0.0.0:53 and clashes with the
+    #     dnsmasq instance NetworkManager starts for the hotspot
+    #     (ipv4.method shared -> --listen-address=10.0.0.1).
+    #
+    # The "network-manager" *layer* cannot be used here: it provides the
+    # "network-activator" capability which is already provided by
+    # systemd-net-min (required by trixie-minbase) -> provider conflict at
+    # build time. The package is installed instead and configured here.
+    # ------------------------------------------------------------------
+    - $BDEBSTRAP_HOOKS/enable-units "$1" NetworkManager
+    - $BDEBSTRAP_HOOKS/disable-units "$1" systemd-networkd systemd-networkd.socket systemd-networkd-wait-online iwd dnsmasq
+    # 02-wlan0.network would make systemd-networkd (and with it iwd) grab
+    # the WiFi device. 01-eth0.network is kept as a fallback, NetworkManager
+    # creates its own "Wired connection 1" (DHCP) profile anyway.
+    - rm -f "$1/etc/systemd/network/02-wlan0.network"
+    # Pin the WiFi backend to wpa_supplicant (iwd is not used) so the
+    # device is not claimed by two daemons.
+    - mkdir -p "$1/etc/NetworkManager/conf.d"
+    - printf '[device]\nwifi.backend=wpa_supplicant\nwifi.iwd.autoconnect=false\n' > "$1/etc/NetworkManager/conf.d/99-phoniebox-wifi.conf"
+    - mkdir -p "$1/etc/NetworkManager/system-connections"
+    - chmod 0700 "$1/etc/NetworkManager/system-connections"

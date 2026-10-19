@@ -3,23 +3,49 @@
 Phoniebox Wi-Fi Setup Portal (Captive Portal).
 
 Serves a simple webpage while the bootstrap hotspot is active.
-The user connects to the hotspot, opens http://10.0.0.1/, selects their home
-Wi-Fi from a scanned list, enters the password, and clicks "Connect".
+The user connects to the hotspot, opens http://10.0.0.1/, enters their home
+Wi-Fi (SSID + password) and clicks "Connect".
 If the connection succeeds, the Phoniebox installation starts automatically
 (handled by phoniebox-firstboot).
+
+Note: while the WiFi device is an access point it cannot scan for other
+networks - the list of nearby networks is therefore a convenience, the
+manual SSID field is the reliable way.
 """
 import html
 import json
+import os
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-IFACE = "wlan0"
-PORT = 80
+
+def detect_iface():
+    """Name of the WiFi device (wlan0 on a Pi 3)."""
+    iface = os.environ.get("WIFI_IF", "").strip()
+    if iface:
+        return iface
+    try:
+        res = subprocess.run(
+            ["nmcli", "-t", "-f", "DEVICE,TYPE", "device", "status"],
+            capture_output=True, text=True, timeout=15,
+        )
+        for line in res.stdout.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 2 and parts[1] == "wifi":
+                return parts[0]
+    except Exception:
+        pass
+    return "wlan0"
+
+
+IFACE = detect_iface()
+PORT = int(os.environ.get("PORTAL_PORT", "80"))
 INSTALL_MINUTES = 20
-HOTSPOT_CON = "phoniebox-bootstrap"
+HOTSPOT_CON = os.environ.get("BOOTSTRAP_CON", "phoniebox-bootstrap")
+HOME_CON = os.environ.get("HOME_WIFI_CON", "phoniebox-home")
 
 STATE = {
     "connecting": False,
@@ -77,11 +103,24 @@ def connect(ssid, password):
         # Give the HTTP response time to reach the user's browser before
         # the hotspot is torn down.
         time.sleep(1)
-        cmd = ["nmcli", "device", "wifi", "connect", ssid, "ifname", IFACE]
+        # Do NOT use "nmcli device wifi connect" here: it scans for the
+        # network first, which is impossible while the device is an access
+        # point. Create the profile and activate it - NetworkManager
+        # deactivates the hotspot on its own while doing so.
+        subprocess.run(["nmcli", "connection", "delete", HOME_CON],
+                       capture_output=True, timeout=30)
+        cmd = ["nmcli", "connection", "add", "type", "wifi",
+               "con-name", HOME_CON, "ifname", IFACE, "ssid", ssid,
+               "connection.autoconnect", "yes"]
         if password:
-            cmd.extend(["password", password])
-
+            cmd += ["802-11-wireless-security.key-mgmt", "wpa-psk",
+                    "802-11-wireless-security.psk", password]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        if res.returncode != 0:
+            raise RuntimeError((res.stderr or res.stdout or
+                                "could not create the WiFi profile").strip())
+        res = subprocess.run(["nmcli", "connection", "up", HOME_CON],
+                             capture_output=True, text=True, timeout=120)
         if res.returncode == 0:
             STATE["connected"] = True
             STATE["error"] = ""
@@ -95,6 +134,8 @@ def connect(ssid, password):
         _restore_hotspot()
     finally:
         STATE["connecting"] = False
+
+
 PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -118,43 +159,53 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   .net input {{ margin-right: 10px; transform: scale(1.3); }}
   .net label {{ flex: 1; cursor: pointer; }}
   .sig {{ color: #888; font-size: 0.85em; float: right; }}
-  input[type=password] {{ width: 100%; padding: 12px; margin: 12px 0;
+  input[type=text], input[type=password] {{ width: 100%; padding: 12px; margin: 12px 0;
                          border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }}
+  label.field {{ display: block; font-weight: 600; margin-top: 8px; }}
   button {{ background: #2c3e50; color: white; border: none; padding: 14px 20px;
-           border-radius: 6px; font-size: 1.05em; width: 100%; cursor: pointer; }}
+            border-radius: 6px; font-size: 1.05em; width: 100%; cursor: pointer; }}
   button:active {{ background: #1a252f; }}
   .empty {{ text-align: center; padding: 20px; color: #666; }}
   .error {{ background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24;
            padding: 12px; border-radius: 6px; margin-bottom: 12px; }}
-  .footer {{ text-align: center; color: #999; font-size: 0.85em; margin-top: 20px; }}
+  .footer {{ color: #999; font-size: 0.85em; margin-top: 20px; text-align: center; }}
 </style>
 </head>
 <body>
 <h1>🎵 Phoniebox Wi-Fi Setup</h1>
 
 <div class="warn">
- ⚠️ Important: Once connected, the Phoniebox installation starts automatically
- and takes approximately {install_minutes} minutes.
- <small>Do NOT unplug the power during installation! The device will reboot
- itself when finished.</small>
+  ⚠️ Important: Once connected, the Phoniebox installation starts automatically
+  and takes approximately {install_minutes} minutes.
+  <small>Do NOT unplug the power during installation! The device will reboot
+  itself when finished.</small>
 </div>
 
 <div class="card">
-{error_html}
-<form method="post" action="/connect">
-  <h3 style="margin-top:0">Select your Wi-Fi network</h3>
+  {error_html}
+  <form method="post" action="/connect">
+    <h3 style="margin-top:0">Your home Wi-Fi</h3>
+    <label class="field" for="ssid">Network name (SSID)</label>
+    <input type="text" name="ssid" id="ssid" value="{ssid_value}"
+           placeholder="MyHomeWiFi" autocomplete="off" required>
+    <label class="field" for="password">Wi-Fi password</label>
+    <input type="password" name="password" id="password"
+           placeholder="leave empty for open networks" autocomplete="off">
+    <button type="submit">🔗 Connect &amp; Start Installation</button>
+  </form>
   {networks_html}
-  <input type="password" name="password" placeholder="Wi-Fi password (leave empty for open networks)">
-  <button type="submit">🔗 Connect &amp; Start Installation</button>
-</form>
-<p style="text-align:center;margin-top:14px">
-  <a href="/">⟳ Rescan networks</a>
-</p>
 </div>
 
 <div class="footer">
   Phoniebox Setup Portal · http://10.0.0.1/
 </div>
+<script>
+document.querySelectorAll('input[name=ssid_choice]').forEach(function (radio) {{
+  radio.addEventListener('change', function () {{
+    document.getElementById('ssid').value = radio.value;
+  }});
+}});
+</script>
 </body>
 </html>"""
 
@@ -178,9 +229,10 @@ CONNECTING_PAGE = """<!DOCTYPE html>
 <h2>Connecting to <span id="ssid"></span>...</h2>
 <p id="status">Checking connection status every 5 seconds.</p>
 <div class="warn">
- ⚠️ If this page stops loading, the connection succeeded! The Phoniebox
- installation will start automatically and takes about {install_minutes} minutes.
- <br><br>Do NOT unplug the power!
+  ⚠️ If this page stops loading, the connection succeeded! The hotspot is closing
+  and the Phoniebox installation starts automatically - it takes about
+  {install_minutes} minutes.
+  <br><br>Do NOT unplug the power!
 </div>
 <script>
 document.getElementById('ssid').textContent = {ssid_js};
@@ -206,22 +258,27 @@ setInterval(poll, 4000);
 </script>
 </body>
 </html>"""
+
+
 def render_networks():
+    """Nearby networks - only shown when a scan is actually possible."""
     networks = scan_networks()
     if not networks:
-        return ("<div class='empty'>No Wi-Fi networks found yet.<br>"
-                "<a href='/'>⟳ Rescan</a></div>")
+        return ("<p style='color:#666;font-size:0.9em;margin-top:16px'>"
+                "No nearby networks listed - the WiFi radio cannot scan while it "
+                "is an access point. Please type the network name above.</p>")
     rows = []
     for i, net in enumerate(networks):
         locked = "🔒" if net["security"] and net["security"] != "--" else "🌐"
         rows.append(f"""
         <div class="net">
-          <input type="radio" name="ssid" value="{html.escape(net['ssid'])}"
+          <input type="radio" name="ssid_choice" value="{html.escape(net['ssid'])}"
                  id="net{i}" {'checked' if i == 0 else ''}>
           <label for="net{i}">{locked} {html.escape(net['ssid'])}
                  <span class="sig">{html.escape(net['signal'])}%</span></label>
         </div>""")
-    return "".join(rows)
+    return ("<p style='margin-top:20px'><strong>Nearby networks</strong> "
+            "(click one to fill the field above)</p>" + "".join(rows))
 
 
 def render_index(error=""):
@@ -230,6 +287,7 @@ def render_index(error=""):
         install_minutes=INSTALL_MINUTES,
         networks_html=render_networks(),
         error_html=error_html,
+        ssid_value=html.escape(STATE.get("ssid", "")),
     )
 
 
@@ -276,7 +334,7 @@ class PortalHandler(BaseHTTPRequestHandler):
         password = form.get("password", [""])[0]
 
         if not ssid:
-            self._send(render_index("Please select a Wi-Fi network first."))
+            self._send(render_index("Please enter the name of your Wi-Fi network."))
             return
         if STATE["connecting"]:
             self._send(render_connecting(STATE["ssid"]))
@@ -292,7 +350,7 @@ class PortalHandler(BaseHTTPRequestHandler):
 
 def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), PortalHandler)
-    print(f"Phoniebox Wi-Fi portal listening on 0.0.0.0:{PORT}")
+    print(f"Phoniebox Wi-Fi portal listening on 0.0.0.0:{PORT} (device {IFACE})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

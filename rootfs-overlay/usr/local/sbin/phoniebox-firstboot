@@ -2,13 +2,17 @@
 # /usr/local/sbin/phoniebox-firstboot  (runs as root, once per image)
 #
 # Flow:
-#   1. Make NetworkManager the active network manager.
+#   1. Make NetworkManager the only network manager of the system.
 #   2. If /boot/firmware/phoniebox-wifi.conf exists, connect to that WiFi.
-#   3. Otherwise open a temporary bootstrap WiFi hotspot so the user can
-#      connect and configure the home WiFi (SSH -> phoniebox-wifi-setup).
+#   3. Otherwise open a temporary bootstrap WiFi hotspot - right away, no
+#      long "waiting for internet" phase in front of it - so the user can
+#      connect and configure the home WiFi.
 #   4. As soon as the box has internet, run the Phoniebox installation
 #      non-interactively with options from /etc/phoniebox-image/preseed.env.
 #   5. Clean up, mark done, reboot (optional).
+#
+# Every nmcli call is logged (output included) - the log file is the only
+# way to find out why the hotspot did not come up on the device.
 
 set -uo pipefail
 
@@ -19,9 +23,10 @@ BOOT_WIFI_CONF=/boot/firmware/phoniebox-wifi.conf
 CHECK_URL=http://deb.debian.org/
 HOME_WIFI_CON=phoniebox-home
 BOOTSTRAP_CON=phoniebox-bootstrap
-CONNECT_TIMEOUT=600      # seconds to wait for initial connectivity
-WIFI_CONF_TIMEOUT=120    # seconds to wait after applying boot wifi conf
-WAIT_LOOP_MAX=86400      # max seconds waiting for the user to configure wifi
+GRACE_PERIOD=30         # seconds to wait for an existing (wired) internet link
+WIFI_CONF_TIMEOUT=120   # seconds to wait after applying boot wifi conf
+WAIT_LOOP_MAX=86400     # max seconds waiting for the user to configure wifi
+HOTSPOT_ATTEMPTS=3      # how often the hotspot is retried
 
 [ -f "$PRESEED_FILE" ] && . "$PRESEED_FILE"
 
@@ -29,7 +34,9 @@ PHONIEBOX_USER=${PHONIEBOX_USER:-phoniebox}
 BOOTSTRAP_SSID=${BOOTSTRAP_SSID:-Phoniebox_Setup}
 BOOTSTRAP_PASSWORD=${BOOTSTRAP_PASSWORD:-PlayItLoud!}
 BOOTSTRAP_IP=${BOOTSTRAP_IP:-10.0.0.1}
-WIFI_IF=${WIFI_IF:-wlan0}
+BOOTSTRAP_BAND=${BOOTSTRAP_BAND:-bg}
+BOOTSTRAP_COUNTRY=${BOOTSTRAP_COUNTRY:-DE}
+WIFI_IF=${WIFI_IF:-}
 REBOOT_AFTER_INSTALL=${REBOOT_AFTER_INSTALL:-true}
 
 mkdir -p "$STATUS_DIR"
@@ -40,18 +47,35 @@ log() {
     logger -t phoniebox-firstboot "$*" 2>/dev/null || true
 }
 
+# Internet means: name resolution works *and* an HTTP request succeeds.
+# Without DNS the installer (apt) would fail later on, so do not accept a
+# half-connected link here.
 have_internet() {
+    getent hosts deb.debian.org >/dev/null 2>&1 || return 1
     curl -4 -fsS -m 8 -o /dev/null "$CHECK_URL"
+}
+
+# NetworkManager must be the only network manager of the system. The other
+# ones (systemd-networkd, iwd, the standalone dnsmasq) are either grabbing
+# the WiFi device or the DNS port and would break the hotspot.
+stop_other_network_managers() {
+    # systemd-networkd configures wlan0/eth0 on its own (and needs iwd for
+    # WiFi) - it has to go before NetworkManager takes the device.
+    systemctl disable --now systemd-networkd.service systemd-networkd.socket \
+        systemd-networkd-wait-online.service 2>/dev/null || true
+    # iwd takes over the WiFi device via netifd and blocks wpa_supplicant/NM
+    systemctl disable --now iwd.service 2>/dev/null || true
+    systemctl mask iwd.service 2>/dev/null || true
+    # The standalone dnsmasq binds 0.0.0.0:53 and clashes with the dnsmasq
+    # instance NetworkManager starts for the hotspot (ipv4.method shared).
+    systemctl disable --now dnsmasq.service 2>/dev/null || true
 }
 
 setup_networkmanager() {
     rfkill unblock all 2>/dev/null || true
+    stop_other_network_managers
     systemctl enable NetworkManager 2>/dev/null || true
     systemctl start NetworkManager
-    # Make sure the other network stacks stay out of the way.
-    systemctl disable --now systemd-networkd.socket systemd-networkd.service 2>/dev/null || true
-    systemctl mask iwd 2>/dev/null || true
-    systemctl stop iwd 2>/dev/null || true
     local i
     for i in $(seq 1 30); do
         nmcli general status >/dev/null 2>&1 && return 0
@@ -60,12 +84,54 @@ setup_networkmanager() {
     return 1
 }
 
+# Name of the WiFi device (wlan0 on a Pi 3, but do not rely on it).
+detect_wifi_iface() {
+    local dev
+    dev=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+          | awk -F: '$2 == "wifi" { print $1; exit }')
+    if [ -z "$dev" ]; then
+        for dev in /sys/class/net/*/wireless; do
+            [ -e "$dev" ] || continue
+            dev=${dev%/wireless}
+            echo "${dev##*/}"
+            return 0
+        done
+        return 1
+    fi
+    echo "$dev"
+}
+
+prepare_wifi() {
+    # Cycle the radio: if iwd had the device, NM does not get it back on
+    # its own - it has to recreate the wpa_supplicant interface.
+    nmcli radio wifi off >/dev/null 2>&1 || true
+    sleep 2
+    nmcli radio wifi on >/dev/null 2>&1 || true
+    local i
+    for i in $(seq 1 60); do
+        WIFI_IF=$(detect_wifi_iface) && [ -n "$WIFI_IF" ] && break
+        sleep 1
+    done
+    if [ -z "$WIFI_IF" ]; then
+        WIFI_IF=wlan0
+        log "WARNING: no WiFi device found, assuming '$WIFI_IF'"
+    else
+        log "WiFi device: '$WIFI_IF'"
+    fi
+    nmcli device set "$WIFI_IF" managed yes 2>/dev/null || true
+    sleep 2
+    log "NM device status:"
+    nmcli device status
+    nmcli -f WIFI-PROPERTIES.AP device show "$WIFI_IF" 2>&1 | sed 's/^/    /'
+}
+
 wifi_connect() { # $1 con-name  $2 ssid  $3 psk
+    log "Connecting to WiFi '$2' (profile '$1')"
     nmcli connection delete "$1" >/dev/null 2>&1 || true
     nmcli connection add type wifi con-name "$1" ifname "$WIFI_IF" \
         ssid "$2" 802-11-wireless-security.key-mgmt wpa-psk \
-        802-11-wireless-security.psk "$3" connection.autoconnect yes >/dev/null
-    nmcli connection up "$1" >/dev/null 2>&1
+        802-11-wireless-security.psk "$3" connection.autoconnect yes
+    nmcli connection up "$1"
 }
 
 provision_wifi_from_boot() {
@@ -79,26 +145,59 @@ provision_wifi_from_boot() {
         return 1
     fi
     [ -n "$country" ] && iw reg set "$country" 2>/dev/null
-    log "Connecting to WiFi '$ssid' from $BOOT_WIFI_CONF"
     wifi_connect "$HOME_WIFI_CON" "$ssid" "$psk"
 }
 
+# Create and activate the bootstrap access point. The profile is created
+# first (so the IP configuration is right from the start) and activated
+# afterwards - 'nmcli device wifi hotspot' would activate it immediately
+# with the default 10.42.0.1 address.
 start_bootstrap_hotspot() {
-    log "Starting bootstrap hotspot SSID='$BOOTSTRAP_SSID' IP=$BOOTSTRAP_IP"
-    nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
-    nmcli connection add type wifi con-name "$BOOTSTRAP_CON" ifname "$WIFI_IF" \
-        ssid "$BOOTSTRAP_SSID" 802-11-wireless.mode ap \
-        802-11-wireless-security.key-mgmt wpa-psk \
-        802-11-wireless-security.psk "$BOOTSTRAP_PASSWORD" \
-        ipv4.method shared ipv4.address "${BOOTSTRAP_IP}/24" \
-        connection.autoconnect no >/dev/null
-    nmcli connection up "$BOOTSTRAP_CON" >/dev/null
-    # Start the Wi-Fi setup portal so users can pick their home network
-    # from a webpage (http://10.0.0.1/) instead of using the CLI.
-    systemctl start phoniebox-wifi-portal.service 2>/dev/null \
-        || log "WARNING: failed to start Wi-Fi setup portal"
-    log "Wi-Fi setup portal is running at http://$BOOTSTRAP_IP/"
+    local attempt gateway
+    gateway="${BOOTSTRAP_IP%.*}.254"
+
+    # Regulatory domain first: an unset country may lead to a channel that
+    # is not allowed here and the AP would refuse to start.
+    [ -n "$BOOTSTRAP_COUNTRY" ] && iw reg set "$BOOTSTRAP_COUNTRY" 2>/dev/null
+
+    for attempt in $(seq 1 "$HOTSPOT_ATTEMPTS"); do
+        log "Starting bootstrap hotspot SSID='$BOOTSTRAP_SSID' IP=$BOOTSTRAP_IP (attempt $attempt/$HOTSPOT_ATTEMPTS)"
+        nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
+
+        if nmcli connection add type wifi con-name "$BOOTSTRAP_CON" ifname "$WIFI_IF" \
+                ssid "$BOOTSTRAP_SSID" \
+                802-11-wireless.mode ap \
+                802-11-wireless.band "$BOOTSTRAP_BAND" \
+                802-11-wireless-security.key-mgmt wpa-psk \
+                802-11-wireless-security.psk "$BOOTSTRAP_PASSWORD" \
+                ipv4.method shared \
+                ipv4.addresses "${BOOTSTRAP_IP}/24" \
+                ipv4.gateway "$gateway" \
+                connection.autoconnect no; then
+
+            if nmcli connection up "$BOOTSTRAP_CON"; then
+                log "Bootstrap hotspot '$BOOTSTRAP_SSID' is up on $WIFI_IF"
+                nmcli -f GENERAL.STATE device show "$WIFI_IF" 2>&1 | sed 's/^/    /'
+                # Start the Wi-Fi setup portal so users can pick their home
+                # network from a webpage (http://10.0.0.1/) instead of using
+                # the CLI.
+                if systemctl start phoniebox-wifi-portal.service; then
+                    log "Wi-Fi setup portal is running at http://$BOOTSTRAP_IP/"
+                else
+                    log "WARNING: failed to start the Wi-Fi setup portal"
+                fi
+                return 0
+            fi
+            log "ERROR: 'nmcli connection up $BOOTSTRAP_CON' failed"
+        else
+            log "ERROR: could not create the hotspot profile '$BOOTSTRAP_CON'"
+        fi
+        nmcli -f GENERAL.STATE device show "$WIFI_IF" 2>&1 | sed 's/^/    /'
+        sleep 10
+    done
+    return 1
 }
+
 run_install() {
     local user="$PHONIEBOX_USER"
     local home ugroup
@@ -138,6 +237,10 @@ run_install() {
         # Stop the setup portal - no longer needed once installation begins.
         systemctl stop phoniebox-wifi-portal.service 2>/dev/null || true
         nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
+        # The installation may have re-enabled other network managers or the
+        # standalone dnsmasq (package postinst scripts) - they would break
+        # the upstream autohotspot after the reboot.
+        stop_other_network_managers
         touch "$STATUS_DIR/initialized"
         log "Phoniebox installation complete"
         return 0
@@ -152,11 +255,12 @@ run_install() {
 log "First boot - phoniebox image initialization"
 
 setup_networkmanager || { log "FATAL: NetworkManager did not come up"; exit 1; }
+prepare_wifi
 
-# 1) Give wired/DHCP networks a grace period.
+# 1) A wired connection may already provide internet - short grace period.
 got=0
 waited=0
-while [ "$waited" -lt "$CONNECT_TIMEOUT" ]; do
+while [ "$waited" -lt "$GRACE_PERIOD" ]; do
     if have_internet; then got=1; break; fi
     sleep 5
     waited=$((waited + 5))
@@ -170,15 +274,18 @@ if [ "$got" -eq 0 ] && provision_wifi_from_boot; then
         sleep 5
         waited=$((waited + 5))
     done
+    [ "$got" -eq 0 ] && log "WARNING: no internet with the WiFi from $BOOT_WIFI_CONF"
 fi
 
-# 3) Still offline: open the bootstrap hotspot and wait for the user.
+# 3) Still offline: open the bootstrap hotspot now and wait for the user.
 if [ "$got" -eq 0 ]; then
-    start_bootstrap_hotspot \
-        || log "WARNING: bootstrap hotspot failed; waiting for any connection anyway"
-    log "Bootstrap hotspot is up. Connect to '$BOOTSTRAP_SSID',"
-    log "then open http://$BOOTSTRAP_IP/ in a browser and follow the setup page"
-    log "(or SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\")"
+    if start_bootstrap_hotspot; then
+        log "Bootstrap hotspot is up. Connect to '$BOOTSTRAP_SSID',"
+        log "then open http://$BOOTSTRAP_IP/ in a browser and follow the setup page"
+        log "(or SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\")"
+    else
+        log "WARNING: the bootstrap hotspot could not be started - see the nmcli errors above"
+    fi
     waited=0
     while ! have_internet; do
         sleep 10

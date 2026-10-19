@@ -14,8 +14,14 @@ fi
 SSID=$1
 PSK=$2
 COUNTRY=${3:-}
-WIFI_IF=${WIFI_IF:-wlan0}
 CON_NAME=phoniebox-home
+
+# Name of the WiFi device (wlan0 on a Pi 3).
+if [ -z "${WIFI_IF:-}" ]; then
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+              | awk -F: '$2 == "wifi" { print $1; exit }')
+    WIFI_IF=${WIFI_IF:-wlan0}
+fi
 
 if [ -n "$COUNTRY" ]; then
     iw reg set "$COUNTRY" 2>/dev/null || true
@@ -25,18 +31,20 @@ nmcli connection delete "$CON_NAME" >/dev/null 2>&1 || true
 nmcli connection add type wifi con-name "$CON_NAME" ifname "$WIFI_IF" \
     ssid "$SSID" 802-11-wireless-security.key-mgmt wpa-psk \
     802-11-wireless-security.psk "$PSK" \
-    connection.autoconnect yes >/dev/null
+    connection.autoconnect yes
 
-echo "Connecting to '$SSID' ..."
+echo "Connecting to '$SSID' on $WIFI_IF ..."
+# Activating the profile closes the bootstrap hotspot automatically.
 if ! nmcli connection up "$CON_NAME"; then
     echo "ERROR: could not connect. Check SSID/PSK and try again." >&2
     exit 1
 fi
 
-if curl -4 -fsS -m 8 -o /dev/null http://deb.debian.org/; then
+if getent hosts deb.debian.org >/dev/null 2>&1 \
+   && curl -4 -fsS -m 8 -o /dev/null http://deb.debian.org/; then
     echo "OK: connected and internet is reachable."
     echo "The Phoniebox installation will start automatically - this takes 20-60 minutes."
-    echo "Progress: ssh ${CON_NAME#}@phoniebox 'tail -f ~/INSTALL-*.log'"
+    echo "Progress: ssh phoniebox@<ip-of-the-box> 'tail -f ~/INSTALL-*.log'"
 else
     echo "Connected, but internet is not reachable yet."
     echo "The installation will start automatically once internet access is available."
