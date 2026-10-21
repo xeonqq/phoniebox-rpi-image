@@ -12,10 +12,12 @@ Note: while the WiFi device is an access point it cannot scan for other
 networks - the list of nearby networks is therefore a convenience, the
 manual SSID field is the reliable way.
 """
+import errno
 import html
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -367,13 +369,24 @@ class PortalHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), PortalHandler)
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), PortalHandler)
+    except OSError as e:
+        if e.errno == errno.EADDRINUSE:
+            # The Phoniebox web app (nginx) owns port 80 - the setup is
+            # done, so there is nothing left to serve. Exit cleanly, a
+            # restart would only fight nginx for the port.
+            print(f"Port {PORT} is already in use (Phoniebox web app?) - "
+                  "not starting the WiFi setup portal")
+            return 0
+        raise
     print(f"Phoniebox Wi-Fi portal listening on 0.0.0.0:{PORT} (device {IFACE})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -228,6 +228,13 @@ run_install() {
     fi
 
     rm -f "$home/.phoniebox-install-success" "$home/.phoniebox-install-failed"
+
+    # The Phoniebox web app (nginx) needs port 80. The setup portal has to
+    # give it up *before* the installation starts, otherwise nginx fails to
+    # bind and the web app is not reachable (the setup page would answer
+    # on http://phoniebox.local instead).
+    systemctl stop phoniebox-wifi-portal.service 2>/dev/null || true
+
     if runuser -l "$user" -c /usr/local/sbin/phoniebox-install-unattended; then
         log "Installer driver finished"
     else

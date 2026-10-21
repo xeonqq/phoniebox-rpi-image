@@ -1,13 +1,15 @@
 [Unit]
 Description=Phoniebox Wi-Fi setup captive portal
-# The portal is only useful while the bootstrap hotspot is up, which is
-# managed by phoniebox-firstboot. It is started/stopped on demand, so the
-# service is not enabled in any target by default.
+# The portal is only useful while the bootstrap hotspot is up - it also
+# has to release port 80 for the Phoniebox web app (nginx). PartOf stops
+# the portal together with the hotspot.
 After=NetworkManager.service
 Wants=NetworkManager.service
+PartOf=phoniebox-hotspot@bootstrap.service
 
 [Service]
 Type=simple
+Environment=PORTAL_PORT=80
 ExecStart=/usr/local/sbin/phoniebox-wifi-portal
 Restart=on-failure
 RestartSec=5

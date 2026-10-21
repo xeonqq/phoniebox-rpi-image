@@ -125,6 +125,13 @@ sudo phoniebox-wifi-setup "MyHomeSSID" "MyHomePassword" DE
 Both close the hotspot first — the radio is handed back to
 NetworkManager, which then connects to the home WiFi.
 
+The setup portal is a **one time** thing: it serves port 80 while the
+Phoniebox is being set up and is stopped when the installation starts, so
+the Phoniebox web app (nginx) can take over port 80. If the portal finds
+port 80 already taken it exits quietly instead of fighting nginx for the
+port. The port can be changed with `PORTAL_PORT` in
+`phoniebox-wifi-portal.service`.
+
 Note: while the WiFi device is an access point it cannot scan for other
 networks, so the list of nearby networks in the portal is often empty —
 type the SSID manually.
