@@ -1,0 +1,19 @@
+[Unit]
+Description=Phoniebox WiFi access point (%i)
+Documentation=file:/usr/local/sbin/phoniebox-hotspot
+After=NetworkManager.service
+# The access point and the client connection share one radio - never run
+# both at the same time.
+Conflicts=phoniebox-hotspot@bootstrap.service phoniebox-hotspot@autohotspot.service
+
+[Service]
+Type=simple
+Environment=PHONIEBOX_HOTSPOT_MODE=%i
+ExecStart=/usr/local/sbin/phoniebox-hotspot run
+ExecStop=/usr/local/sbin/phoniebox-hotspot stop
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

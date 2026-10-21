@@ -33,6 +33,11 @@ nmcli connection add type wifi con-name "$CON_NAME" ifname "$WIFI_IF" \
     802-11-wireless-security.psk "$PSK" \
     connection.autoconnect yes
 
+# The bootstrap hotspot owns the radio - it has to go before NetworkManager
+# can connect to the home WiFi.
+echo "Closing the bootstrap hotspot ..."
+sudo systemctl stop phoniebox-hotspot@bootstrap.service 2>/dev/null || true
+
 echo "Connecting to '$SSID' on $WIFI_IF ..."
 # Activating the profile closes the bootstrap hotspot automatically.
 if ! nmcli connection up "$CON_NAME"; then

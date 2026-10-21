@@ -42,8 +42,10 @@ cd ~/RPi-Jukebox-RFID && installation/components/setup_rfid_reader.sh
 
 ## Network stack
 
-NetworkManager is the **only** network manager of the image. The base
-image (`trixie-minbase`) ships `systemd-networkd` + `iwd` and the
+NetworkManager manages the **client** side (connecting to the home WiFi).
+The **access point** is run by hostapd, see below.
+
+The base image (`trixie-minbase`) ships `systemd-networkd` + `iwd` and the
 `dnsmasq` package enables its own daemon — all three break the hotspot:
 
 * `systemd-networkd` configures `wlan0` itself (`02-wlan0.network`) and
@@ -66,6 +68,37 @@ by `systemd-net-min` (required by `trixie-minbase`) → provider conflict
 at build time. The package is installed instead and configured in the
 custom layer.
 
+## The access point: hostapd, not NetworkManager
+
+NetworkManager can only create access points through its wpa_supplicant
+backend, and that does **not** work with the brcmfmac driver of the
+Raspberry Pi 3 (BCM43430/1):
+
+```
+nl80211: kernel reports: key setting validation failed
+wlan0: Could not connect to kernel driver
+wlan0: Failed to initialize AP interface
+Error: Connection activation failed: 802.1X supplicant took too long to authenticate
+```
+
+hostapd drives the same hardware without problems, so the image runs the
+access point with hostapd (`/usr/local/sbin/phoniebox-hotspot` +
+`phoniebox-hotspot@.service`) and lets NetworkManager keep the client
+side. While the access point is up, the radio is taken away from
+NetworkManager (`nmcli device set wlan0 managed no`); stopping the
+hotspot gives it back.
+
+| Unit | Purpose |
+| --- | --- |
+| `phoniebox-hotspot@bootstrap.service` | The setup hotspot (`Phoniebox_Setup`) used while the Phoniebox is installed |
+| `phoniebox-hotspot@autohotspot.service` | The fallback hotspot (`Phoniebox_Hotspot_phoniebox`) when the box has no internet |
+| `phoniebox-autohotspot.timer` | Checks every 2 minutes whether the box has internet and starts/stops the fallback hotspot |
+
+The upstream autohotspot (`ENABLE_AUTOHOTSPOT` in `preseed.env`) is
+therefore **disabled** — it uses the broken NetworkManager access point.
+The image brings its own hostapd based autohotspot instead, configured
+with the same `AUTOHOTSPOT_*` values.
+
 ## First-boot flow
 
 1. NetworkManager becomes the active (and only) network manager.
@@ -74,7 +107,7 @@ custom layer.
 3. If the boot partition contains `phoniebox-wifi.conf`
    (`SSID=`, `PSK=`, optional `COUNTRY=`), the device joins that WiFi
    (up to 120 s).
-4. Otherwise a temporary bootstrap hotspot is opened **immediately**
+4. Otherwise the temporary bootstrap hotspot is opened **immediately**
    (default SSID `Phoniebox_Setup`, password `PlayItLoud!` — see
    preseed) and stays up until the box has internet.
 5. Once the device has internet, the Phoniebox installation runs
@@ -89,13 +122,16 @@ ssh phoniebox@10.0.0.1          # password from config/phoniebox-pi3.yaml
 sudo phoniebox-wifi-setup "MyHomeSSID" "MyHomePassword" DE
 ```
 
+Both close the hotspot first — the radio is handed back to
+NetworkManager, which then connects to the home WiFi.
+
 Note: while the WiFi device is an access point it cannot scan for other
 networks, so the list of nearby networks in the portal is often empty —
-type the SSID manually. Activating the home WiFi closes the hotspot.
+type the SSID manually.
 
 After the box reboots it behaves like a normal Phoniebox, including the
-upstream Auto-Hotspot (`Phoniebox_Hotspot_phoniebox` / `PlayItLoud!`)
-whenever it cannot reach a known WiFi (Web App: `http://phoniebox.local`).
+autohotspot (`Phoniebox_Hotspot_phoniebox` / `PlayItLoud!`) whenever it
+cannot reach a known WiFi (Web App: `http://phoniebox.local`).
 
 ## Building
 

@@ -22,7 +22,6 @@ PRESEED_FILE=/etc/phoniebox-image/preseed.env
 BOOT_WIFI_CONF=/boot/firmware/phoniebox-wifi.conf
 CHECK_URL=http://deb.debian.org/
 HOME_WIFI_CON=phoniebox-home
-BOOTSTRAP_CON=phoniebox-bootstrap
 GRACE_PERIOD=30         # seconds to wait for an existing (wired) internet link
 WIFI_CONF_TIMEOUT=120   # seconds to wait after applying boot wifi conf
 WAIT_LOOP_MAX=86400     # max seconds waiting for the user to configure wifi
@@ -148,36 +147,22 @@ provision_wifi_from_boot() {
     wifi_connect "$HOME_WIFI_CON" "$ssid" "$psk"
 }
 
-# Create and activate the bootstrap access point. The profile is created
-# first (so the IP configuration is right from the start) and activated
-# afterwards - 'nmcli device wifi hotspot' would activate it immediately
-# with the default 10.42.0.1 address.
+# Create and activate the bootstrap access point.
+#
+# The access point is run by hostapd, not by NetworkManager: NM's
+# wpa_supplicant backend cannot create an access point with the brcmfmac
+# driver of the Pi 3 ("key setting validation failed"). See
+# /usr/local/sbin/phoniebox-hotspot.
 start_bootstrap_hotspot() {
-    local attempt gateway
-    gateway="${BOOTSTRAP_IP%.*}.254"
-
-    # Regulatory domain first: an unset country may lead to a channel that
-    # is not allowed here and the AP would refuse to start.
-    [ -n "$BOOTSTRAP_COUNTRY" ] && iw reg set "$BOOTSTRAP_COUNTRY" 2>/dev/null
+    local attempt
 
     for attempt in $(seq 1 "$HOTSPOT_ATTEMPTS"); do
-        log "Starting bootstrap hotspot SSID='$BOOTSTRAP_SSID' IP=$BOOTSTRAP_IP (attempt $attempt/$HOTSPOT_ATTEMPTS)"
-        nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
-
-        if nmcli connection add type wifi con-name "$BOOTSTRAP_CON" ifname "$WIFI_IF" \
-                ssid "$BOOTSTRAP_SSID" \
-                802-11-wireless.mode ap \
-                802-11-wireless.band "$BOOTSTRAP_BAND" \
-                802-11-wireless-security.key-mgmt wpa-psk \
-                802-11-wireless-security.psk "$BOOTSTRAP_PASSWORD" \
-                ipv4.method shared \
-                ipv4.addresses "${BOOTSTRAP_IP}/24" \
-                ipv4.gateway "$gateway" \
-                connection.autoconnect no; then
-
-            if nmcli connection up "$BOOTSTRAP_CON"; then
+        log "Starting bootstrap hotspot SSID='$BOOTSTRAP_SSID' (attempt $attempt/$HOTSPOT_ATTEMPTS)"
+        if systemctl start phoniebox-hotspot@bootstrap.service; then
+            sleep 3
+            if systemctl is-active --quiet phoniebox-hotspot@bootstrap.service; then
                 log "Bootstrap hotspot '$BOOTSTRAP_SSID' is up on $WIFI_IF"
-                nmcli -f GENERAL.STATE device show "$WIFI_IF" 2>&1 | sed 's/^/    /'
+                iw dev "$WIFI_IF" info 2>&1 | sed 's/^/    /'
                 # Start the Wi-Fi setup portal so users can pick their home
                 # network from a webpage (http://10.0.0.1/) instead of using
                 # the CLI.
@@ -188,11 +173,12 @@ start_bootstrap_hotspot() {
                 fi
                 return 0
             fi
-            log "ERROR: 'nmcli connection up $BOOTSTRAP_CON' failed"
+            log "ERROR: the hotspot service did not stay up"
         else
-            log "ERROR: could not create the hotspot profile '$BOOTSTRAP_CON'"
+            log "ERROR: the hotspot service failed to start"
         fi
-        nmcli -f GENERAL.STATE device show "$WIFI_IF" 2>&1 | sed 's/^/    /'
+        journalctl -u phoniebox-hotspot@bootstrap.service --no-pager -n 20 2>&1 \
+            | sed 's/^/    /'
         sleep 10
     done
     return 1
@@ -212,9 +198,13 @@ run_install() {
     export DEBIAN_FRONTEND=noninteractive
     # The installer routines need root for apt/systemctl. Grant passwordless
     # sudo for the duration of the install.
+    #
+    # The file name matters: sudo applies the *last* matching rule, and the
+    # image ships /etc/sudoers.d/010_rpi-passwd (user1 ALL=(ALL:ALL) ALL,
+    # i.e. password required). "zz-..." sorts after it, so NOPASSWD wins.
     printf '%s ALL=(ALL) NOPASSWD: ALL\nDefaults env_keep += "DEBIAN_FRONTEND"\n' "$user" \
-        > /etc/sudoers.d/010-phoniebox-nopasswd
-    chmod 0440 /etc/sudoers.d/010-phoniebox-nopasswd
+        > /etc/sudoers.d/zz-phoniebox-nopasswd
+    chmod 0440 /etc/sudoers.d/zz-phoniebox-nopasswd
 
     # Stage the pinned Phoniebox source that was cloned at build time.
     if [ ! -d "$home/RPi-Jukebox-RFID" ] && [ -d /opt/Phoniebox/.git ]; then
@@ -236,10 +226,12 @@ run_install() {
         loginctl enable-linger "$user" 2>/dev/null || true
         # Stop the setup portal - no longer needed once installation begins.
         systemctl stop phoniebox-wifi-portal.service 2>/dev/null || true
-        nmcli connection delete "$BOOTSTRAP_CON" >/dev/null 2>&1 || true
+        # The setup hotspot is replaced by the autohotspot from now on.
+        systemctl stop phoniebox-hotspot@bootstrap.service 2>/dev/null || true
+        systemctl enable phoniebox-autohotspot.timer 2>/dev/null || true
         # The installation may have re-enabled other network managers or the
         # standalone dnsmasq (package postinst scripts) - they would break
-        # the upstream autohotspot after the reboot.
+        # the hotspot after the reboot.
         stop_other_network_managers
         touch "$STATUS_DIR/initialized"
         log "Phoniebox installation complete"

@@ -18,6 +18,7 @@ mmdebstrap:
     - wireless-tools
     - wpasupplicant
     - dnsmasq
+    - hostapd
     - rsync
     - sudo
     - wget
@@ -55,3 +56,6 @@ mmdebstrap:
     - printf '[device]\nwifi.backend=wpa_supplicant\nwifi.iwd.autoconnect=false\n' > "$1/etc/NetworkManager/conf.d/99-phoniebox-wifi.conf"
     - mkdir -p "$1/etc/NetworkManager/system-connections"
     - chmod 0700 "$1/etc/NetworkManager/system-connections"
+    # sudo warns about the permissions of the file the base image creates
+    # for the device user.
+    - test ! -f "$1/etc/sudoers.d/010_rpi-passwd" || chmod 0440 "$1/etc/sudoers.d/010_rpi-passwd"

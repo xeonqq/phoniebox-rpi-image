@@ -1,0 +1,12 @@
+[Unit]
+Description=Check regularly whether the Phoniebox has internet and start the hotspot if not
+Documentation=file:/usr/local/sbin/phoniebox-hotspot
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+Unit=phoniebox-autohotspot.service
+
+[Install]
+WantedBy=timers.target

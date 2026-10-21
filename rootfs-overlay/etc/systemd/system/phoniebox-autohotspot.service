@@ -1,0 +1,7 @@
+[Unit]
+Description=Phoniebox auto hotspot (starts the access point without internet)
+Documentation=file:/usr/local/sbin/phoniebox-hotspot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/phoniebox-hotspot autohotspot

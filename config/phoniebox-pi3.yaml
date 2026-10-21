@@ -39,6 +39,9 @@ packages:
   - wireless-tools
   - wpasupplicant
   - dnsmasq
+  # The access point is run by hostapd: NetworkManager cannot create one
+  # with the brcmfmac driver of the Pi 3 ("key setting validation failed").
+  - hostapd
   - rsync
   - sudo
   - avahi-daemon

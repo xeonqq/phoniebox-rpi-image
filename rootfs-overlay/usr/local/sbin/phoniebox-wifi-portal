@@ -44,7 +44,9 @@ def detect_iface():
 IFACE = detect_iface()
 PORT = int(os.environ.get("PORTAL_PORT", "80"))
 INSTALL_MINUTES = 20
-HOTSPOT_CON = os.environ.get("BOOTSTRAP_CON", "phoniebox-bootstrap")
+# The access point is run by hostapd, not by NetworkManager (NM cannot do
+# AP mode with the brcmfmac driver of the Pi 3).
+HOTSPOT_SERVICE = os.environ.get("BOOTSTRAP_SERVICE", "phoniebox-hotspot@bootstrap.service")
 HOME_CON = os.environ.get("HOME_WIFI_CON", "phoniebox-home")
 
 STATE = {
@@ -87,8 +89,8 @@ def scan_networks():
 def _restore_hotspot():
     """Bring the bootstrap hotspot back up after a failed connection attempt."""
     try:
-        subprocess.run(["nmcli", "connection", "up", HOTSPOT_CON],
-                       capture_output=True, timeout=30)
+        subprocess.run(["systemctl", "start", HOTSPOT_SERVICE],
+                       capture_output=True, timeout=60)
     except Exception:
         pass
 
@@ -109,6 +111,10 @@ def connect(ssid, password):
         # deactivates the hotspot on its own while doing so.
         subprocess.run(["nmcli", "connection", "delete", HOME_CON],
                        capture_output=True, timeout=30)
+        # The bootstrap hotspot owns the radio - it has to go before
+        # NetworkManager can connect to the home WiFi.
+        subprocess.run(["systemctl", "stop", HOTSPOT_SERVICE],
+                       capture_output=True, timeout=60)
         cmd = ["nmcli", "connection", "add", "type", "wifi",
                "con-name", HOME_CON, "ifname", IFACE, "ssid", ssid,
                "connection.autoconnect", "yes"]
