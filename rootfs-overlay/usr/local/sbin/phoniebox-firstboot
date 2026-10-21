@@ -46,6 +46,20 @@ log() {
     logger -t phoniebox-firstboot "$*" 2>/dev/null || true
 }
 
+# A weak power supply makes the Pi under-volt. The SD card then gets
+# corrupted (ext4 checksum errors, filesystem remounted read-only) and the
+# installation dies with confusing errors - warn about it right away.
+check_power_supply() {
+    local state
+    state=$(vcgencmd get_throttled 2>/dev/null) || return 0
+    case "$state" in
+        *0x0|*0x00000) return 0 ;;
+    esac
+    log "WARNING: power problem detected (${state})"
+    log "WARNING: 0x10000 = under-voltage, 0x40000 = throttled, 0x80000 = soft temperature limit"
+    log "WARNING: use a 5V/2.5A power supply and a good cable - otherwise the SD card gets corrupted"
+}
+
 # Internet means: name resolution works *and* an HTTP request succeeds.
 # Without DNS the installer (apt) would fail later on, so do not accept a
 # half-connected link here.
@@ -245,6 +259,7 @@ run_install() {
 
 [ -f "$STATUS_DIR/initialized" ] && { log "Already initialized"; exit 0; }
 log "First boot - phoniebox image initialization"
+check_power_supply
 
 setup_networkmanager || { log "FATAL: NetworkManager did not come up"; exit 1; }
 prepare_wifi
