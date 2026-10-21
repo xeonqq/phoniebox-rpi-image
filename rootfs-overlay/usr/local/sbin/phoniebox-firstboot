@@ -276,7 +276,7 @@ if [ "$got" -eq 0 ]; then
         log "then open http://$BOOTSTRAP_IP/ in a browser and follow the setup page"
         log "(or SSH in and run: sudo phoniebox-wifi-setup \"SSID\" \"PSK\")"
     else
-        log "WARNING: the bootstrap hotspot could not be started - see the nmcli errors above"
+        log "WARNING: the bootstrap hotspot could not be started - see the errors above"
     fi
     waited=0
     while ! have_internet; do
