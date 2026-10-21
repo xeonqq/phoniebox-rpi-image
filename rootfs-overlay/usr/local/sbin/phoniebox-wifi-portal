@@ -168,6 +168,9 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
   input[type=text], input[type=password] {{ width: 100%; padding: 12px; margin: 12px 0;
                          border: 1px solid #ccc; border-radius: 6px; font-size: 1em; }}
   label.field {{ display: block; font-weight: 600; margin-top: 8px; }}
+  .toggle {{ display: inline-flex; align-items: center; gap: 6px; margin: 0 0 8px 0;
+            font-size: 0.9em; color: #555; cursor: pointer; user-select: none; }}
+  .toggle input {{ margin: 0; transform: scale(1.2); }}
   button {{ background: #2c3e50; color: white; border: none; padding: 14px 20px;
             border-radius: 6px; font-size: 1.05em; width: 100%; cursor: pointer; }}
   button:active {{ background: #1a252f; }}
@@ -197,6 +200,10 @@ PAGE_TEMPLATE = """<!DOCTYPE html>
     <label class="field" for="password">Wi-Fi password</label>
     <input type="password" name="password" id="password"
            placeholder="leave empty for open networks" autocomplete="off">
+    <label class="toggle" for="showpw">
+      <input type="checkbox" id="showpw">
+      <span>Show password</span>
+    </label>
     <button type="submit">🔗 Connect &amp; Start Installation</button>
   </form>
   {networks_html}
@@ -210,6 +217,11 @@ document.querySelectorAll('input[name=ssid_choice]').forEach(function (radio) {{
   radio.addEventListener('change', function () {{
     document.getElementById('ssid').value = radio.value;
   }});
+}});
+document.getElementById('showpw').addEventListener('change', function () {{
+  var pw = document.getElementById('password');
+  pw.type = this.checked ? 'text' : 'password';
+  pw.focus();
 }});
 </script>
 </body>
