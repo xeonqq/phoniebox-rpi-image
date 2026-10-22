@@ -81,6 +81,28 @@ done
 # fill in values that are in neither file.
 [ -f "$PRESEED_FILE" ] && . "$PRESEED_FILE"
 
+### Ensure the user manager is reachable ---------------------------------
+
+# A lot of routines use "systemctl --user" (e.g. enabling jukebox-daemon).
+# That requires the user's systemd manager and $XDG_RUNTIME_DIR, which a
+# bare "runuser -l" session does not provide - the enable then silently
+# fails and the verify steps abort the installation. Start a persistent
+# user manager (linger) and point the environment at it.
+USER_UID="$(id -u)"
+export XDG_RUNTIME_DIR="/run/user/${USER_UID}"
+if ! sudo loginctl enable-linger "$CURRENT_USER" >/dev/null 2>&1; then
+    log "WARNING: could not enable linger for $CURRENT_USER"
+fi
+for i in $(seq 1 15); do
+    [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+    sleep 2
+done
+if [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
+    log "User manager reachable at ${XDG_RUNTIME_DIR}/bus"
+else
+    log "WARNING: no user bus at ${XDG_RUNTIME_DIR} - 'systemctl --user' may fail"
+fi
+
 ### Pre-selected options (replaces customize_options) --------------------
 
 LOCAL_HOSTNAME="$(hostname)"
