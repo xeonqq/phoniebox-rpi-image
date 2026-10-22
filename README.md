@@ -108,8 +108,9 @@ with the same `AUTOHOTSPOT_*` values.
    (`SSID=`, `PSK=`, optional `COUNTRY=`), the device joins that WiFi
    (up to 120 s).
 4. Otherwise the temporary bootstrap hotspot is opened **immediately**
-   (default SSID `Phoniebox_Setup`, password `PlayItLoud!` — see
-   preseed) and stays up until the box has internet.
+   (default SSID `Phoniebox_Setup`, password-free/open — set
+   `BOOTSTRAP_PASSWORD` in the preseed to protect it) and stays up
+   until the box has internet.
 5. Once the device has internet, the Phoniebox installation runs
    unattended (20–60 min) and the box reboots.
 

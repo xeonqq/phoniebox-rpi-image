@@ -75,13 +75,15 @@ load_settings() {
     case "$mode" in
         autohotspot)
             HOTSPOT_SSID=${AUTOHOTSPOT_SSID:-${AUTOHOTSPOT_PROFILE:-Phoniebox_Hotspot}_$(hostname)}
-            HOTSPOT_PASSWORD=${AUTOHOTSPOT_PASSWORD:-PlayItLoud!}
+            # An empty (preset) password means an open access point.
+            HOTSPOT_PASSWORD=${AUTOHOTSPOT_PASSWORD-PlayItLoud!}
             HOTSPOT_IP=${AUTOHOTSPOT_IP:-10.0.0.1}
             HOTSPOT_COUNTRY=${AUTOHOTSPOT_COUNTRYCODE:-DE}
             ;;
         *)
             HOTSPOT_SSID=${BOOTSTRAP_SSID:-Phoniebox_Setup}
-            HOTSPOT_PASSWORD=${BOOTSTRAP_PASSWORD:-PlayItLoud!}
+            # An empty (preset) password means an open access point.
+            HOTSPOT_PASSWORD=${BOOTSTRAP_PASSWORD-PlayItLoud!}
             HOTSPOT_IP=${BOOTSTRAP_IP:-10.0.0.1}
             HOTSPOT_COUNTRY=${BOOTSTRAP_COUNTRY:-DE}
             ;;
@@ -103,11 +105,16 @@ country_code=$HOTSPOT_COUNTRY
 ieee80211n=1
 wmm_enabled=1
 auth_algs=1
+EOF
+    # An empty password means an open access point (no encryption).
+    if [ -n "$HOTSPOT_PASSWORD" ]; then
+        cat >> "$HOSTAPD_CONF" <<EOF
 wpa=2
 wpa_passphrase=$HOTSPOT_PASSWORD
 wpa_key_mgmt=WPA-PSK
 rsn_pairwise=CCMP
 EOF
+    fi
     chmod 0600 "$HOSTAPD_CONF"
 }
 
@@ -179,7 +186,11 @@ cmd_run() {
     "$HOSTAPD_BIN" -P "$HOSTAPD_PIDFILE" "$HOSTAPD_CONF" &
     local hostapd_pid=$!
 
-    log "access point '$HOTSPOT_SSID' running on $WIFI_IF ($HOTSPOT_IP)"
+    if [ -n "$HOTSPOT_PASSWORD" ]; then
+        log "access point '$HOTSPOT_SSID' running on $WIFI_IF ($HOTSPOT_IP, WPA2)"
+    else
+        log "access point '$HOTSPOT_SSID' running on $WIFI_IF ($HOTSPOT_IP, open - no password)"
+    fi
 
     wait "$hostapd_pid"
     local rc=$?
