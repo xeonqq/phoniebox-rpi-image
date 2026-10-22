@@ -38,6 +38,13 @@ packages:
   - iw
   - wireless-tools
   - wpasupplicant
+  # First-boot expansion of the root filesystem: the built image only
+  # covers ~4.5 GB of a larger SD card, the Phoniebox installation
+  # needs the whole card. growpart extends the partition, resize2fs
+  # (e2fsprogs) grows the mounted filesystem.
+  - cloud-guest-utils
+  # growpart uses sfdisk at its core (shipped in the fdisk package).
+  - fdisk
   # systemd user services (jukebox-daemon) need a working user manager:
   # without libpam-systemd, user@UID.service fails at first boot ("PAM
   # unable to dlopen(pam_systemd.so)", "$XDG_RUNTIME_DIR is not set") and

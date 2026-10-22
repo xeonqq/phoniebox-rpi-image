@@ -21,12 +21,17 @@ chmod 0755 "$ROOTFS/usr/local/sbin/phoniebox-firstboot" \
            "$ROOTFS/usr/local/sbin/phoniebox-wifi-setup" \
            "$ROOTFS/usr/local/sbin/phoniebox-wifi-portal" \
            "$ROOTFS/usr/local/sbin/phoniebox-wifi-connect" \
-           "$ROOTFS/usr/local/sbin/phoniebox-hotspot"
+           "$ROOTFS/usr/local/sbin/phoniebox-hotspot" \
+           "$ROOTFS/usr/local/sbin/phoniebox-expand-rootfs"
 
 # Stale byte code from the build host must not end up in the image.
 rm -rf "$ROOTFS/usr/local/sbin/__pycache__"
 
 chroot "$ROOTFS" systemctl enable phoniebox-firstboot.service
+
+# The root filesystem only covers the image content; the installation
+# needs the whole SD card (growpart + resize2fs on first boot).
+chroot "$ROOTFS" systemctl enable phoniebox-expand-rootfs.service
 
 # Docker daemon must run at boot; the MeTube container itself is started by
 # phoniebox-metube.service, which is gated on the existence of the music

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Expand the root partition and ext4 filesystem to fill the SD card.
+#
+# rpi-image-gen writes the rootfs partition exactly as large as the image
+# content - on a 16 GB card about 10 GB stay unallocated, and the
+# unattended Phoniebox installation crams into the rest (apt/pip need
+# room). This runs on every boot before phoniebox-firstboot, does
+# nothing on a card that already matches the partition table, and stamps
+# into /var/lib/phoniebox-image when done.
+#
+# growpart (cloud-guest-utils) extends the partition; resize2fs grows
+# the mounted ext4 filesystem online (no reboot needed).
+#
+set -uo pipefail
+
+STAMP=/var/lib/phoniebox-image/rootfs-expanded
+LOGFILE=/var/log/phoniebox-expand-rootfs.log
+
+mkdir -p "$(dirname "$STAMP")" "$(dirname "$LOGFILE")"
+exec >>"$LOGFILE" 2>&1
+
+log() { echo "[phoniebox-expand-rootfs $(date '+%F %T')] $*"; }
+
+if [ -f "$STAMP" ]; then
+    log "already expanded - nothing to do"
+    exit 0
+fi
+
+# Resolve the rootfs block device (mounts can be link-based).
+root_src=$(findmnt -n -o SOURCE /)
+root_dev=$(readlink -f "$root_src")
+case "$root_dev" in
+    /dev/*[0-9]) ;;
+    *) log "root source '$root_src' ($root_dev) is not a block-device partition; skipping"
+       exit 0 ;;
+esac
+disk=${root_dev%%[0-9]}
+part=${root_dev##*[0-9]}
+
+# A partition that already ends at the end of the disk needs no work.
+disk_sectors=$(blockdev --getsz "$disk")
+part_start=$(cat "/sys/class/block/${root_dev##*/}/start")
+part_size=$(cat "/sys/class/block/${root_dev##*/}/size")
+if [ $((part_start + part_size)) = "$disk_sectors" ]; then
+    log "root partition already spans the disk - nothing to do"
+    touch "$STAMP"
+    exit 0
+fi
+
+log "root device: $root_dev (disk $disk, partition $part)"
+log "before: partition $part_size sectors, disk $disk_sectors sectors"
+
+if ! growpart "$disk" "$part"; then
+    log "ERROR: growpart failed - will retry on the next boot"
+    exit 1
+fi
+partx -u "$disk" >/dev/null 2>&1 || true
+
+if ! resize2fs "$root_dev"; then
+    log "ERROR: resize2fs failed - will retry on the next boot"
+    exit 1
+fi
+
+part_size=$(cat "/sys/class/block/${root_dev##*/}/size")
+log "after: partition $part_size sectors"
+log "filesystem: $(df -h / | awk 'NR==2 {print $1 " size " $2 ", used " $3 ", avail " $4}')"
+
+touch "$STAMP"
+log "done"

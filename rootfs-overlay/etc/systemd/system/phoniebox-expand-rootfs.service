@@ -1,0 +1,15 @@
+[Unit]
+Description=Phoniebox - expand the root filesystem to fill the SD card
+Documentation=file:/usr/local/sbin/phoniebox-expand-rootfs
+After=local-fs.target
+# The auto-install needs the room the image build did not use up.
+Before=phoniebox-firstboot.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/phoniebox-expand-rootfs
+# Cheap to re-check on every boot; the script also guards with a stamp.
+ConditionPathExists=!/var/lib/phoniebox-image/rootfs-expanded
+
+[Install]
+WantedBy=multi-user.target
