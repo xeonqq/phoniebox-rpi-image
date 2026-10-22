@@ -34,8 +34,19 @@ case "$root_dev" in
     *) log "root source '$root_src' ($root_dev) is not a block-device partition; skipping"
        exit 0 ;;
 esac
-disk=${root_dev%%[0-9]}
-part=${root_dev##*[0-9]}
+# Derive the parent disk and the partition number from sysfs (handles
+# "mmcblk0p2" style names where the partition is not just a digit suffix).
+dev_name=${root_dev##*/}
+part=$(printf %s "$dev_name" | grep -oE '[0-9]+$')
+if [ -z "$part" ]; then
+    log "cannot determine the partition number of '$root_dev'; skipping"
+    exit 0
+fi
+disk=/dev/$(basename "$(readlink -f "/sys/class/block/$dev_name/..")")
+if [ ! -b "$disk" ]; then
+    log "cannot determine the parent disk of '$root_dev'; skipping"
+    exit 0
+fi
 
 # A partition that already ends at the end of the disk needs no work.
 disk_sectors=$(blockdev --getsz "$disk")
