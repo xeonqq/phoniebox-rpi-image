@@ -2,9 +2,9 @@
 Description=Phoniebox WiFi access point (%i)
 Documentation=file:/usr/local/sbin/phoniebox-hotspot
 After=NetworkManager.service
-# The access point and the client connection share one radio - never run
-# both at the same time.
-Conflicts=phoniebox-hotspot@bootstrap.service phoniebox-hotspot@autohotspot.service
+# Only one access point at a time - phoniebox-hotspot stops the other
+# instance when it starts (a Conflicts= on the instance itself would keep
+# the unit from starting at all).
 
 [Service]
 Type=simple

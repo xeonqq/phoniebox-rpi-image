@@ -154,6 +154,18 @@ cleanup_interface() {
 # Run the access point in the foreground (systemd supervises it).
 cmd_run() {
     local mode="${1:-bootstrap}"
+    local other
+    case "$mode" in
+        autohotspot) other="$BOOTSTRAP_INSTANCE" ;;
+        *)           other="$AUTOHOTSPOT_INSTANCE" ;;
+    esac
+    # Only one access point at a time - the radio can only do one thing.
+    if systemctl is-active --quiet "$other"; then
+        log "stopping $other - only one access point at a time"
+        systemctl stop "$other"
+        sleep 2
+    fi
+
     load_settings "$mode"
     write_hostapd_conf
     write_dnsmasq_conf
@@ -171,6 +183,10 @@ cmd_run() {
 
     wait "$hostapd_pid"
     local rc=$?
+    # systemd stops the service with SIGTERM - that is not an error
+    if [ "$rc" -gt 128 ]; then
+        rc=0
+    fi
     kill "$dnsmasq_pid" 2>/dev/null || true
     cleanup_interface
     return $rc
@@ -211,15 +227,41 @@ have_internet() {
     curl -4 -fsS -m 8 -o /dev/null "$CHECK_URL"
 }
 
+# Name of a stored WiFi connection (if the box knows a network at all).
+known_wifi_profile() {
+    nmcli -t -f NAME,TYPE connection show 2>/dev/null \
+        | awk -F: '$2 == "802-11-wireless" { print $1; exit }'
+}
+
 # Start the autohotspot when there is no internet, stop it otherwise.
+#
+# The access point owns the radio, so while it is up the box cannot be
+# online - the internet check would always fail and the hotspot would stay
+# up forever. Therefore the hotspot is cycled: it is stopped, NetworkManager
+# gets a chance to reconnect to a known network and the hotspot only comes
+# back if the box is still offline.
 cmd_autohotspot() {
-    if have_internet; then
-        if systemctl is-active --quiet "$AUTOHOTSPOT_INSTANCE"; then
+    if systemctl is-active --quiet "$AUTOHOTSPOT_INSTANCE"; then
+        if have_internet; then
             log "internet is available - stopping the autohotspot"
             systemctl stop "$AUTOHOTSPOT_INSTANCE"
+            return
         fi
+        if [ -z "$(known_wifi_profile)" ]; then
+            log "no known WiFi network - keeping the autohotspot up"
+            return
+        fi
+        log "no internet - looking for the known WiFi network"
+        systemctl stop "$AUTOHOTSPOT_INSTANCE"
+        sleep 25   # let NetworkManager reconnect (autoconnect)
+        if have_internet; then
+            log "internet is back - the autohotspot stays off"
+            return
+        fi
+        log "still offline - starting the autohotspot again"
+        systemctl start "$AUTOHOTSPOT_INSTANCE"
     else
-        if ! systemctl is-active --quiet "$AUTOHOTSPOT_INSTANCE"; then
+        if ! have_internet; then
             log "no internet - starting the autohotspot"
             systemctl start "$AUTOHOTSPOT_INSTANCE"
         fi

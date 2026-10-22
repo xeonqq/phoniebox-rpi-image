@@ -20,6 +20,7 @@ chmod 0755 "$ROOTFS/usr/local/sbin/phoniebox-firstboot" \
            "$ROOTFS/usr/local/sbin/phoniebox-install-unattended" \
            "$ROOTFS/usr/local/sbin/phoniebox-wifi-setup" \
            "$ROOTFS/usr/local/sbin/phoniebox-wifi-portal" \
+           "$ROOTFS/usr/local/sbin/phoniebox-wifi-connect" \
            "$ROOTFS/usr/local/sbin/phoniebox-hotspot"
 
 # Stale byte code from the build host must not end up in the image.

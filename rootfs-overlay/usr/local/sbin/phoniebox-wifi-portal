@@ -49,7 +49,6 @@ INSTALL_MINUTES = 20
 # The access point is run by hostapd, not by NetworkManager (NM cannot do
 # AP mode with the brcmfmac driver of the Pi 3).
 HOTSPOT_SERVICE = os.environ.get("BOOTSTRAP_SERVICE", "phoniebox-hotspot@bootstrap.service")
-HOME_CON = os.environ.get("HOME_WIFI_CON", "phoniebox-home")
 
 STATE = {
     "connecting": False,
@@ -98,7 +97,11 @@ def _restore_hotspot():
 
 
 def connect(ssid, password):
-    """Attempt to connect to the selected Wi-Fi in a background thread."""
+    """Connect to the selected Wi-Fi.
+
+    The work runs detached (systemd-run): stopping the hotspot also stops
+    this portal (PartOf=), so it must not live in the portal's process.
+    """
     STATE["connecting"] = True
     STATE["connected"] = False
     STATE["error"] = ""
@@ -107,36 +110,19 @@ def connect(ssid, password):
         # Give the HTTP response time to reach the user's browser before
         # the hotspot is torn down.
         time.sleep(1)
-        # Do NOT use "nmcli device wifi connect" here: it scans for the
-        # network first, which is impossible while the device is an access
-        # point. Create the profile and activate it - NetworkManager
-        # deactivates the hotspot on its own while doing so.
-        subprocess.run(["nmcli", "connection", "delete", HOME_CON],
-                       capture_output=True, timeout=30)
-        # The bootstrap hotspot owns the radio - it has to go before
-        # NetworkManager can connect to the home WiFi.
-        subprocess.run(["systemctl", "stop", HOTSPOT_SERVICE],
-                       capture_output=True, timeout=60)
-        cmd = ["nmcli", "connection", "add", "type", "wifi",
-               "con-name", HOME_CON, "ifname", IFACE, "ssid", ssid,
-               "connection.autoconnect", "yes"]
-        if password:
-            cmd += ["802-11-wireless-security.key-mgmt", "wpa-psk",
-                    "802-11-wireless-security.psk", password]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        cmd = ["systemd-run", "--unit=phoniebox-wifi-connect", "--collect",
+               "--property=Type=oneshot", "--quiet",
+               "/usr/local/sbin/phoniebox-wifi-connect", ssid, password]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if res.returncode != 0:
-            raise RuntimeError((res.stderr or res.stdout or
-                                "could not create the WiFi profile").strip())
-        res = subprocess.run(["nmcli", "connection", "up", HOME_CON],
-                             capture_output=True, text=True, timeout=120)
-        if res.returncode == 0:
-            STATE["connected"] = True
-            STATE["error"] = ""
-        else:
-            err = res.stderr.strip() or res.stdout.strip() or "Unknown connection error"
-            STATE["error"] = err.splitlines()[-1] if err else "Unknown connection error"
-            # Restore hotspot so the user can retry
-            _restore_hotspot()
+            # Fall back to a detached process if systemd-run is not
+            # available (the process must survive the portal being
+            # stopped together with the hotspot).
+            subprocess.Popen(
+                ["/usr/local/sbin/phoniebox-wifi-connect", ssid, password],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
     except Exception as e:
         STATE["error"] = str(e)
         _restore_hotspot()

@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# /usr/local/sbin/phoniebox-wifi-connect <ssid> [psk]
+#
+# Connect the WiFi device to a network:
+#   1. close the bootstrap hotspot (the radio can only do one thing at a time)
+#   2. hand the radio back to NetworkManager
+#   3. create the connection profile and activate it
+#   4. if that fails, bring the hotspot back up so the user can retry
+#
+# The setup portal starts this script detached (systemd-run): the portal is
+# stopped together with the hotspot (PartOf=), so the work must not live in
+# the portal's process.
+#
+set -uo pipefail
+
+SSID=${1:-}
+PSK=${2:-}
+CON_NAME=phoniebox-home
+HOTSPOT_INSTANCE=phoniebox-hotspot@bootstrap.service
+LOGFILE=/var/log/phoniebox-wifi-connect.log
+
+if [ -z "$SSID" ]; then
+    echo "usage: ${0##*/} <ssid> [psk]" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$LOGFILE")"
+exec >>"$LOGFILE" 2>&1
+
+log() {
+    echo "[phoniebox-wifi-connect $(date '+%F %T')] $*"
+}
+
+restore_hotspot() {
+    log "bringing the bootstrap hotspot back up"
+    systemctl start "$HOTSPOT_INSTANCE" >/dev/null 2>&1 || true
+}
+
+# Name of the WiFi device (wlan0 on a Pi 3).
+if [ -z "${WIFI_IF:-}" ]; then
+    WIFI_IF=$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null \
+              | awk -F: '$2 == "wifi" { print $1; exit }')
+    WIFI_IF=${WIFI_IF:-wlan0}
+fi
+
+log "connecting to '$SSID' on $WIFI_IF"
+
+# Close the hotspot - it owns the radio.
+systemctl stop "$HOTSPOT_INSTANCE" >/dev/null 2>&1 || true
+sleep 3
+
+nmcli connection delete "$CON_NAME" >/dev/null 2>&1 || true
+
+if [ -n "$PSK" ]; then
+    nmcli connection add type wifi con-name "$CON_NAME" ifname "$WIFI_IF" \
+        ssid "$SSID" 802-11-wireless-security.key-mgmt wpa-psk \
+        802-11-wireless-security.psk "$PSK" connection.autoconnect yes
+else
+    nmcli connection add type wifi con-name "$CON_NAME" ifname "$WIFI_IF" \
+        ssid "$SSID" connection.autoconnect yes
+fi
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    log "ERROR: could not create the connection profile for '$SSID'"
+    restore_hotspot
+    exit 1
+fi
+
+if ! nmcli connection up "$CON_NAME"; then
+    log "ERROR: could not connect to '$SSID'"
+    # Remove the broken profile: NetworkManager would keep retrying it and
+    # fight the hotspot for the radio.
+    #
+    # "nmcli connection delete" needs a polkit authorization, which a
+    # detached unit cannot get ("Unable to determine UID of the request"),
+    # so the profile file is removed and NetworkManager is asked to reload
+    # the profiles from disk.
+    rm -f "/etc/NetworkManager/system-connections/${CON_NAME}.nmconnection"
+    nmcli connection reload >/dev/null 2>&1 || true
+    restore_hotspot
+    exit 1
+fi
+
+log "connected to '$SSID'"
+ip -br addr show "$WIFI_IF" 2>/dev/null | sed 's/^/    /'
+exit 0
