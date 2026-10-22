@@ -38,6 +38,13 @@ packages:
   - iw
   - wireless-tools
   - wpasupplicant
+  # systemd user services (jukebox-daemon) need a working user manager:
+  # without libpam-systemd, user@UID.service fails at first boot ("PAM
+  # unable to dlopen(pam_systemd.so)", "$XDG_RUNTIME_DIR is not set") and
+  # the unattended installer aborts. dbus-user-session provides the
+  # $XDG_RUNTIME_DIR/bus socket that D-Bus user clients expect.
+  - libpam-systemd
+  - dbus-user-session
   - dnsmasq
   # The access point is run by hostapd: NetworkManager cannot create one
   # with the brcmfmac driver of the Pi 3 ("key setting validation failed").

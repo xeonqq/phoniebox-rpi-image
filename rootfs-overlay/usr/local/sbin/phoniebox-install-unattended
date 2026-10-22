@@ -97,10 +97,20 @@ for i in $(seq 1 15); do
     [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
     sleep 2
 done
+if ! sudo systemctl is-active --quiet "user@${USER_UID}.service" 2>/dev/null; then
+    # linger starts the manager implicitly - give it one explicit try
+    log "Starting the systemd user manager user@${USER_UID}.service"
+    sudo systemctl start "user@${USER_UID}.service" 2>&1 | sed 's/^/  /' || true
+    for i in $(seq 1 10); do
+        [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+        sleep 2
+    done
+fi
 if [ -S "${XDG_RUNTIME_DIR}/bus" ]; then
     log "User manager reachable at ${XDG_RUNTIME_DIR}/bus"
 else
     log "WARNING: no user bus at ${XDG_RUNTIME_DIR} - 'systemctl --user' may fail"
+    sudo systemctl status "user@${USER_UID}.service" --no-pager 2>&1 | sed 's/^/  /' | head -8
 fi
 
 ### Pre-selected options (replaces customize_options) --------------------
