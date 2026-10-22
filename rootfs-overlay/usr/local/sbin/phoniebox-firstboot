@@ -262,6 +262,44 @@ run_install() {
     return 1
 }
 
+# The box has no RTC: right after boot the clock is still at the time the
+# image was built. apt then refuses repositories whose signatures appear
+# to come from the future ("Signature ... was created after the
+# --not-after date") and the installer aborts. Wait for NTP, and fall
+# back to the HTTP Date header of a reliable server if NTP is slow or
+# blocked.
+sync_clock() {
+    local i hdate now sig off
+    for i in 1 2 3 4; do
+        if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+            log "Clock is NTP-synchronized: $(date '+%F %T %z')"
+            return 0
+        fi
+        [ "$i" -eq 4 ] || sleep 3
+    done
+    log "Clock is not NTP-synchronized - trying the HTTP Date header"
+    hdate=$(curl -4 -fsSI -m 10 "$CHECK_URL" 2>/dev/null \
+                 | tr -d '\r' | awk 'tolower($1) == "date:" { $1=""; sub(/^ +/, "", $0); print }')
+    if [ -z "$hdate" ]; then
+        log "WARNING: could not obtain a reference time - continuing anyway"
+        return 0
+    fi
+    sig=$(date -u -d "$hdate" +%s 2>/dev/null) \
+        || { log "WARNING: could not parse the reference time '$hdate'"; return 0; }
+    now=$(date +%s)
+    off=$((sig - now))
+    if [ "${off#-}" -le 300 ]; then
+        log "Clock drift ${off}s is within tolerance"
+        return 0
+    fi
+    log "Clock is off by ${off}s - setting it to $hdate"
+    if date -u -s "@$sig" >/dev/null 2>&1; then
+        log "Clock is now $hdate"
+    else
+        log "WARNING: could not set the clock"
+    fi
+}
+
 ### main -----------------------------------------------------------------
 
 [ -f "$STATUS_DIR/initialized" ] && { log "Already initialized"; exit 0; }
@@ -314,8 +352,10 @@ if [ "$got" -eq 0 ]; then
     done
 fi
 
-log "Internet access detected - running installer"
+log "Internet access detected"
+sync_clock
 
+log "Running installer"
 if ! run_install; then
     exit 1
 fi
