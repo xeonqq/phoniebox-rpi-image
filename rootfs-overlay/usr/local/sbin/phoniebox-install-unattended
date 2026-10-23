@@ -191,8 +191,12 @@ install() {
         # non-interactively for the selected reader.
         RFID_READER_NAME=${RFID_READER_NAME:-rc522_spi}
         log "Registering RFID reader '${RFID_READER_NAME}' (non-interactive)"
+        # "-d a" installs the reader's Python dependencies (e.g. pirc522
+        # for rc522_spi) and runs setup.inc.sh (which enables SPI) - with
+        # "-d no" the finalize step would fail with
+        # "No module named 'pirc522'".
         bash "${INSTALLATION_PATH}/installation/components/setup_rfid_reader.sh" \
-            -r "${RFID_READER_NAME}" -d no -f
+            -r "${RFID_READER_NAME}" -d a -f
     fi
     optimize_boot_time
     setup_autohotspot
