@@ -1,0 +1,10 @@
+# Phoniebox hardware access
+# Debian/RPi OS minimal images ship /dev/spidev*, /dev/gpiomem,
+# /dev/gpiochip* and vcio as root:root 0600 - the Phoniebox user
+# services (RFID reader rc522 on SPI, GPIO buzzers/volume) could never
+# open them. RPi OS normally ships these rules; grant the "gpio" group
+# (image user phoniebox is a member) access after they were created.
+KERNEL=="spidev*",   GROUP="gpio", MODE="0660"
+KERNEL=="gpiomem",   GROUP="gpio", MODE="0660"
+KERNEL=="gpiochip*", GROUP="gpio", MODE="0660"
+KERNEL=="vcio",      GROUP="gpio", MODE="0660"
