@@ -191,12 +191,31 @@ install() {
         # non-interactively for the selected reader.
         RFID_READER_NAME=${RFID_READER_NAME:-rc522_spi}
         log "Registering RFID reader '${RFID_READER_NAME}' (non-interactive)"
-        # "-d a" installs the reader's Python dependencies (e.g. pirc522
-        # for rc522_spi) and runs setup.inc.sh (which enables SPI) - with
-        # "-d no" the finalize step would fail with
-        # "No module named 'pirc522'".
         bash "${INSTALLATION_PATH}/installation/components/setup_rfid_reader.sh" \
             -r "${RFID_READER_NAME}" -d a -f
+        # Upstream's --default-reader path only writes the configuration -
+        # the dependency install ("install reader's requirements.txt")
+        # and the system settings ("setup.inc.sh", enabling SPI) only
+        # happen in the interactive flow. Run them here, for the
+        # non-interactive install this image needs.
+        reader_dir="${INSTALLATION_PATH}/src/jukebox/components/rfid/hardware/${RFID_READER_NAME}"
+        if [ -f "${reader_dir}/requirements.txt" ]; then
+            # pip of the Phoniebox virtual environment (falls back to the
+            # system pip if there is no venv).
+            if [ -x "${VIRTUAL_ENV}/bin/pip" ]; then
+                PIP="${VIRTUAL_ENV}/bin/pip"
+            else
+                PIP=pip3
+            fi
+            log "Installing Python dependencies of reader '${RFID_READER_NAME}'"
+            if ! ( cd "$reader_dir" && "$PIP" install --upgrade -r requirements.txt ); then
+                log "WARNING: pip install of RFID reader dependencies failed - the reader may not start"
+            fi
+        fi
+        if [ -f "${reader_dir}/setup.inc.sh" ]; then
+            log "Running system settings of reader '${RFID_READER_NAME}' (setup.inc.sh)"
+            bash "${reader_dir}/setup.inc.sh" || log "WARNING: setup.inc.sh failed"
+        fi
     fi
     optimize_boot_time
     setup_autohotspot
