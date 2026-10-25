@@ -178,6 +178,15 @@ install() {
     # image build time from the xeonqq fork) was staged as a regular
     # git repository in the user's home dir.
     setup_jukebox_core
+    # The jukebox daemon creates the RFID card database lazily on its first
+    # start. If the box loses power while that file is being written, it is
+    # left 0 bytes - YAML then loads it as None and every card scan crashes
+    # the reader thread ('NoneType' has no attribute 'get'). Seed a valid
+    # empty database before the daemon ever runs.
+    if [ ! -s "${SETTINGS_PATH}/cards.yaml" ]; then
+        printf '{}\n' > "${SETTINGS_PATH}/cards.yaml"
+        log "Seeded empty RFID card database '${SETTINGS_PATH}/cards.yaml'"
+    fi
     setup_mpd
     setup_samba
     setup_jukebox_webapp
