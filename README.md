@@ -1,4 +1,4 @@
-<img src="pics/box_standalone.jpeg" align="right" width="280" />
+<img src="pics/box_standalone.png" align="right" width="280" />
 
 > A custom Raspberry Pi 3 image that ships a fully pre-configured [Phoniebox](https://github.com/MiczFlor/RPi-Jukebox-RFID) — the kids' audio player — which installs itself on first boot.
 > Just flash it to an SD card, power on, and your little storybox is ready. No programming knowledge needed.
